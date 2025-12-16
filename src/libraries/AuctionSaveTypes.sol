@@ -8,8 +8,12 @@ library AuctionSaveTypes {
                                 CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
-    uint256 constant BPS = 10_000; // Basis points denominator
+    uint256 constant GROUP_SIZE = 5;
+    uint256 constant COMMITMENT = 50 ether; // Contribution amount per cycle
+    uint256 constant SECURITY_DEPOSIT = 50 ether;
+    uint256 constant MAX_BID_BPS = 3000; // 30% max bid
     uint256 constant DEV_FEE_BPS = 100; // 1% developer fee
+    uint256 constant BPS = 10_000; // Basis points denominator
 
     /*//////////////////////////////////////////////////////////////
                                 ENUMS
@@ -41,7 +45,9 @@ library AuctionSaveTypes {
         bool joined;
         bool hasWon; // Has won in any cycle (can't win again)
         bool defaulted; // Has defaulted (kicked from future cycles)
+        bool hasOffset; // Has commitment offset (one-cycle relief after winning)
         uint256 securityDeposit; // Amount locked as security
+        uint256 withheld; // 20% winning portion withheld until completion
     }
 
     /// @notice Per-cycle state
