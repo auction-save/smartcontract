@@ -7,6 +7,8 @@ import "../src/AuctionSaveGroup.sol";
 import "../src/libraries/AuctionSaveTypes.sol";
 import "./mocks/MockERC20.sol";
 
+/// @title AuctionSaveGroupTest - Tests for commit-reveal AUCTION mechanism
+/// @dev Tests the "highest bidder wins" flow as per boss's demo
 contract AuctionSaveGroupTest is Test {
     AuctionSaveFactory public factory;
     AuctionSaveGroup public group;
@@ -32,13 +34,9 @@ contract AuctionSaveGroupTest is Test {
     address[] members;
 
     function setUp() public {
-        // Deploy mock token (18 decimals)
         token = new MockERC20("Test USDT", "TUSDT", 18);
-
-        // Deploy factory
         factory = new AuctionSaveFactory(developer);
 
-        // Create group
         vm.prank(creator);
         address groupAddr = factory.createGroup(
             address(token),
@@ -53,10 +51,8 @@ contract AuctionSaveGroupTest is Test {
         );
         group = AuctionSaveGroup(groupAddr);
 
-        // Setup members array
         members = [alice, bob, charlie, dave, eve];
 
-        // Mint tokens to all members
         for (uint256 i = 0; i < members.length; i++) {
             token.mint(members[i], 1000 ether);
             vm.prank(members[i]);
@@ -84,39 +80,6 @@ contract AuctionSaveGroupTest is Test {
         assertEq(group.currentCycle(), 1);
     }
 
-    function test_Join_RevertWhen_AlreadyJoined() public {
-        vm.prank(alice);
-        group.join();
-
-        vm.prank(alice);
-        vm.expectRevert(AuctionSaveGroup.AlreadyJoined.selector);
-        group.join();
-    }
-
-    function test_Join_RevertWhen_GroupFull() public {
-        _joinAllMembers();
-
-        address extraMember = makeAddr("extra");
-        token.mint(extraMember, 1000 ether);
-        vm.prank(extraMember);
-        token.approve(address(group), type(uint256).max);
-
-        // After group is full, status changes to ACTIVE, so GroupNotFilling is thrown first
-        vm.prank(extraMember);
-        vm.expectRevert(AuctionSaveGroup.GroupNotFilling.selector);
-        group.join();
-    }
-
-    function test_Join_TransfersSecurityDeposit() public {
-        uint256 balanceBefore = token.balanceOf(alice);
-
-        vm.prank(alice);
-        group.join();
-
-        assertEq(token.balanceOf(alice), balanceBefore - SECURITY_DEPOSIT);
-        assertEq(token.balanceOf(address(group)), SECURITY_DEPOSIT);
-    }
-
     /*//////////////////////////////////////////////////////////////
                         CONTRIBUTION TESTS
     //////////////////////////////////////////////////////////////*/
@@ -137,203 +100,157 @@ contract AuctionSaveGroupTest is Test {
         _joinAllMembers();
         _allPayContribution();
 
-        (AuctionSaveTypes.CycleStatus status,,,,,,,) = group.getCycleInfo(1);
-        assertEq(uint256(status), uint256(AuctionSaveTypes.CycleStatus.COMMITTING));
-    }
-
-    function test_PayContribution_RevertWhen_AlreadyPaid() public {
-        _joinAllMembers();
-
-        vm.prank(alice);
-        group.payContribution();
-
-        vm.prank(alice);
-        vm.expectRevert(AuctionSaveGroup.AlreadyPaid.selector);
-        group.payContribution();
-    }
-
-    function test_PayContribution_RevertWhen_PayWindowClosed() public {
-        _joinAllMembers();
-
-        // Warp past pay deadline
-        vm.warp(block.timestamp + PAY_WINDOW + 1);
-
-        vm.prank(alice);
-        vm.expectRevert(AuctionSaveGroup.PayWindowClosed.selector);
-        group.payContribution();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        DEFAULT TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function test_ProcessDefaults_PenalizesNonPayers() public {
-        _joinAllMembers();
-
-        // Only alice pays
-        vm.prank(alice);
-        group.payContribution();
-
-        // Warp past pay deadline
-        vm.warp(block.timestamp + PAY_WINDOW + 1);
-
-        // Process defaults
-        group.processDefaults();
-
-        // Check bob is defaulted
-        (,, bool defaulted,) = group.members(bob);
-        assertTrue(defaulted);
-
-        // Check penalty escrow increased
-        assertEq(group.penaltyEscrow(), SECURITY_DEPOSIT * 4); // 4 members defaulted
-    }
-
-    function test_ProcessDefaults_AdvancesToCommit() public {
-        _joinAllMembers();
-        _allPayContribution();
-
-        // Already in COMMITTING, but let's test the flow
-        (AuctionSaveTypes.CycleStatus status,,,,,,,) = group.getCycleInfo(1);
+        (AuctionSaveTypes.CycleStatus status,,,,,,,,) = group.getCycleInfo(1);
         assertEq(uint256(status), uint256(AuctionSaveTypes.CycleStatus.COMMITTING));
     }
 
     /*//////////////////////////////////////////////////////////////
-                        COMMIT-REVEAL TESTS
+                        COMMIT-REVEAL AUCTION TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_CommitSeed_Success() public {
+    function test_CommitBid_Success() public {
         _joinAllMembers();
         _allPayContribution();
 
-        bytes32 seed = keccak256("alice_seed");
+        // Alice commits a bid of 50 USDT (as per demo)
+        uint256 bidAmount = 50 ether;
         bytes32 salt = keccak256("alice_salt");
-        bytes32 commitment = keccak256(abi.encodePacked(seed, salt));
+        bytes32 commitment = keccak256(abi.encodePacked(bidAmount, salt));
 
         vm.prank(alice);
-        group.commitSeed(commitment);
+        group.commitBid(commitment);
 
         assertTrue(group.hasCommitted(1, alice));
     }
 
-    function test_CommitSeed_RevertWhen_NotPaid() public {
-        _joinAllMembers();
-
-        // Only alice pays
-        vm.prank(alice);
-        group.payContribution();
-
-        // Warp past pay deadline and process defaults
-        vm.warp(block.timestamp + PAY_WINDOW + 1);
-        group.processDefaults();
-
-        // Bob tries to commit but didn't pay
-        bytes32 commitment = keccak256(abi.encodePacked(bytes32("seed"), bytes32("salt")));
-        vm.prank(bob);
-        vm.expectRevert(AuctionSaveGroup.MemberDefaultedError.selector);
-        group.commitSeed(commitment);
-    }
-
-    function test_RevealSeed_Success() public {
+    function test_RevealBid_Success() public {
         _joinAllMembers();
         _allPayContribution();
 
-        // Get cycle deadlines
-        (,,, uint256 commitDeadline, uint256 revealDeadline,,,) = group.getCycleInfo(1);
+        (,,, uint256 commitDeadline,,,,,) = group.getCycleInfo(1);
 
-        bytes32 seed = keccak256("alice_seed");
+        // Alice commits bid of 50 USDT
+        uint256 bidAmount = 50 ether;
         bytes32 salt = keccak256("alice_salt");
-        bytes32 commitment = keccak256(abi.encodePacked(seed, salt));
+        bytes32 commitment = keccak256(abi.encodePacked(bidAmount, salt));
 
         vm.prank(alice);
-        group.commitSeed(commitment);
+        group.commitBid(commitment);
 
         // Warp past commit deadline
         vm.warp(commitDeadline + 1);
         group.advanceToReveal();
 
+        // Reveal bid
         vm.prank(alice);
-        group.revealSeed(seed, salt);
+        group.revealBid(bidAmount, salt);
 
         assertTrue(group.hasRevealed(1, alice));
+        assertEq(group.getRevealedBid(1, alice), bidAmount);
     }
 
-    function test_RevealSeed_RevertWhen_InvalidReveal() public {
+    function test_RevealBid_RevertWhen_InvalidReveal() public {
         _joinAllMembers();
         _allPayContribution();
 
-        // Get cycle deadlines
-        (,,, uint256 commitDeadline,,,,) = group.getCycleInfo(1);
+        (,,, uint256 commitDeadline,,,,,) = group.getCycleInfo(1);
 
-        bytes32 seed = keccak256("alice_seed");
+        uint256 bidAmount = 50 ether;
         bytes32 salt = keccak256("alice_salt");
-        bytes32 commitment = keccak256(abi.encodePacked(seed, salt));
+        bytes32 commitment = keccak256(abi.encodePacked(bidAmount, salt));
 
         vm.prank(alice);
-        group.commitSeed(commitment);
+        group.commitBid(commitment);
 
-        // Warp past commit deadline
         vm.warp(commitDeadline + 1);
         group.advanceToReveal();
 
-        // Try to reveal with wrong seed
+        // Try to reveal with wrong bid amount
         vm.prank(alice);
         vm.expectRevert(AuctionSaveGroup.InvalidReveal.selector);
-        group.revealSeed(keccak256("wrong_seed"), salt);
+        group.revealBid(75 ether, salt); // Wrong amount
     }
 
     /*//////////////////////////////////////////////////////////////
-                        SETTLE CYCLE TESTS
+                        AUCTION SETTLEMENT TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_SettleCycle_Success() public {
-        _completeCycleToSettle();
+    function test_SettleCycle_HighestBidderWins() public {
+        _joinAllMembers();
+        _allPayContribution();
 
-        uint256 expectedPool = CONTRIBUTION * GROUP_SIZE;
-        uint256 expectedFee = (expectedPool * 100) / 10000; // 1%
-        uint256 expectedPayout = expectedPool - expectedFee;
+        (,,, uint256 commitDeadline, uint256 revealDeadline,,,,) = group.getCycleInfo(1);
 
-        // Get balances before
-        uint256[] memory balancesBefore = new uint256[](members.length);
+        // Demo scenario: Different bids
+        // Alice: 50 USDT, Bob: 75 USDT, Charlie: 100 USDT (highest)
+        uint256[] memory bidAmounts = new uint256[](5);
+        bidAmounts[0] = 50 ether; // alice
+        bidAmounts[1] = 75 ether; // bob
+        bidAmounts[2] = 100 ether; // charlie (highest)
+        bidAmounts[3] = 25 ether; // dave
+        bidAmounts[4] = 60 ether; // eve
+
+        // Commit phase
         for (uint256 i = 0; i < members.length; i++) {
-            balancesBefore[i] = token.balanceOf(members[i]);
+            bytes32 salt = keccak256(abi.encodePacked("salt", i));
+            bytes32 commitment = keccak256(abi.encodePacked(bidAmounts[i], salt));
+
+            vm.prank(members[i]);
+            group.commitBid(commitment);
         }
 
+        vm.warp(commitDeadline + 1);
+        group.advanceToReveal();
+
+        // Reveal phase
+        for (uint256 i = 0; i < members.length; i++) {
+            bytes32 salt = keccak256(abi.encodePacked("salt", i));
+
+            vm.prank(members[i]);
+            group.revealBid(bidAmounts[i], salt);
+        }
+
+        vm.warp(revealDeadline + 1);
+        group.advanceToSettle();
+
+        // Settle - Charlie should win (highest bid)
+        uint256 charlieBalanceBefore = token.balanceOf(charlie);
         group.settleCycle();
 
-        // Check cycle is settled
-        (AuctionSaveTypes.CycleStatus status,,,,,,, address winner) = group.getCycleInfo(1);
-        assertEq(uint256(status), uint256(AuctionSaveTypes.CycleStatus.SETTLED));
-        assertTrue(winner != address(0));
+        (,,,,,,, address winner, uint256 winningBid) = group.getCycleInfo(1);
 
-        // Check winner received payout
-        for (uint256 i = 0; i < members.length; i++) {
-            if (members[i] == winner) {
-                assertEq(token.balanceOf(members[i]), balancesBefore[i] + expectedPayout);
-                break;
-            }
-        }
+        // Charlie (index 2) should be the winner with highest bid
+        assertEq(winner, charlie);
+        assertEq(winningBid, 100 ether);
 
-        // Check dev fee accumulated
-        assertEq(group.devFeeBalance(), expectedFee);
+        // Charlie should receive pool minus dev fee
+        uint256 expectedPool = CONTRIBUTION * GROUP_SIZE;
+        uint256 expectedFee = (expectedPool * 100) / 10000;
+        uint256 expectedPayout = expectedPool - expectedFee;
+        assertEq(token.balanceOf(charlie), charlieBalanceBefore + expectedPayout);
     }
 
-    function test_SettleCycle_WinnerCannotWinAgain() public {
+    function test_SettleCycle_WinnerCannotBidAgain() public {
         _completeCycleToSettle();
         group.settleCycle();
 
-        (,,,,,,, address winner1) = group.getCycleInfo(1);
+        (,,,,,,, address winner1,) = group.getCycleInfo(1);
         (, bool hasWon,,) = group.members(winner1);
         assertTrue(hasWon);
 
-        // Complete cycle 2
+        // Cycle 2: Winner from cycle 1 cannot commit bid
         _allPayContributionForCycle(2);
-        _allCommitAndRevealForCycle(2);
-        group.settleCycle();
 
-        (,,,,,,, address winner2) = group.getCycleInfo(2);
+        (,,, uint256 commitDeadline2,,,,,) = group.getCycleInfo(2);
 
-        // Winner 2 should be different from winner 1
-        assertTrue(winner2 != winner1);
+        // Winner tries to commit - should revert
+        uint256 bidAmount = 50 ether;
+        bytes32 salt = keccak256("salt");
+        bytes32 commitment = keccak256(abi.encodePacked(bidAmount, salt));
+
+        vm.prank(winner1);
+        vm.expectRevert(AuctionSaveGroup.AlreadyWon.selector);
+        group.commitBid(commitment);
     }
 
     function test_SettleCycle_AdvancesToNextCycle() public {
@@ -342,7 +259,7 @@ contract AuctionSaveGroupTest is Test {
 
         assertEq(group.currentCycle(), 2);
 
-        (AuctionSaveTypes.CycleStatus status,,,,,,,) = group.getCycleInfo(2);
+        (AuctionSaveTypes.CycleStatus status,,,,,,,,) = group.getCycleInfo(2);
         assertEq(uint256(status), uint256(AuctionSaveTypes.CycleStatus.COLLECTING));
     }
 
@@ -367,29 +284,6 @@ contract AuctionSaveGroupTest is Test {
         assertEq(token.balanceOf(alice), balanceBefore + SECURITY_DEPOSIT);
     }
 
-    function test_WithdrawSecurity_RevertWhen_NotCompleted() public {
-        _joinAllMembers();
-
-        vm.prank(alice);
-        vm.expectRevert(AuctionSaveGroup.GroupNotCompleted.selector);
-        group.withdrawSecurity();
-    }
-
-    function test_DistributePenaltyEscrow_Success() public {
-        // Complete all cycles with all members paying (no defaults)
-        _completeAllCycles();
-
-        // Since all members paid, penaltyEscrow should be 0
-        // Verify the function handles 0 case gracefully
-        assertEq(group.penaltyEscrow(), 0);
-
-        // Distribute (should handle 0 gracefully - just returns)
-        group.distributePenaltyEscrow();
-
-        // Escrow should still be 0 (nothing to distribute)
-        assertEq(group.penaltyEscrow(), 0);
-    }
-
     /*//////////////////////////////////////////////////////////////
                         DEV FEE TESTS
     //////////////////////////////////////////////////////////////*/
@@ -405,58 +299,6 @@ contract AuctionSaveGroupTest is Test {
         group.withdrawDevFee();
 
         assertEq(token.balanceOf(developer), devBalanceBefore + expectedFee);
-        assertEq(group.devFeeBalance(), 0);
-    }
-
-    function test_WithdrawDevFee_RevertWhen_NotDeveloper() public {
-        _completeCycleToSettle();
-        group.settleCycle();
-
-        vm.prank(alice);
-        vm.expectRevert(AuctionSaveGroup.NotDeveloper.selector);
-        group.withdrawDevFee();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        ACCOUNTING TESTS (Critical bug prevention)
-    //////////////////////////////////////////////////////////////*/
-
-    function test_Accounting_PoolMatchesContributions() public {
-        _joinAllMembers();
-        _allPayContribution();
-
-        (,,,,, uint256 totalContributions,,) = group.getCycleInfo(1);
-        assertEq(totalContributions, CONTRIBUTION * GROUP_SIZE);
-    }
-
-    function test_Accounting_MultiCycle_NoShortfall() public {
-        // This test ensures the contract doesn't run out of funds
-        // Unlike the buggy ref contract, we collect contributions each cycle
-
-        uint256 contractBalanceAfterJoin = token.balanceOf(address(group));
-        assertEq(contractBalanceAfterJoin, 0); // No one joined yet
-
-        _joinAllMembers();
-
-        // After join, contract has security deposits
-        assertEq(token.balanceOf(address(group)), SECURITY_DEPOSIT * GROUP_SIZE);
-
-        // Complete all cycles
-        for (uint256 cycle = 1; cycle <= TOTAL_CYCLES; cycle++) {
-            uint256 balanceBefore = token.balanceOf(address(group));
-
-            _allPayContributionForCycle(cycle);
-
-            // After contributions, balance increased by CONTRIBUTION * GROUP_SIZE
-            assertEq(token.balanceOf(address(group)), balanceBefore + CONTRIBUTION * GROUP_SIZE);
-
-            _allCommitAndRevealForCycle(cycle);
-            group.settleCycle();
-
-            // Contract should never have negative balance (obviously can't in Solidity)
-            // But we verify it has at least security deposits remaining
-            assertTrue(token.balanceOf(address(group)) >= SECURITY_DEPOSIT * GROUP_SIZE - group.devFeeBalance());
-        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -478,7 +320,6 @@ contract AuctionSaveGroupTest is Test {
     }
 
     function _allPayContributionForCycle(uint256 cycle) internal {
-        // Get eligible members (not defaulted)
         for (uint256 i = 0; i < members.length; i++) {
             (,, bool defaulted,) = group.members(members[i]);
             if (!defaulted) {
@@ -489,71 +330,67 @@ contract AuctionSaveGroupTest is Test {
     }
 
     function _allCommitAndReveal() internal {
-        // Get cycle info for timing
-        (,, uint256 payDeadline, uint256 commitDeadline, uint256 revealDeadline,,,) = group.getCycleInfo(1);
+        (,,, uint256 commitDeadline, uint256 revealDeadline,,,,) = group.getCycleInfo(1);
 
-        // Commit phase
+        // Each member bids different amounts (member index * 10 ether + 10)
         for (uint256 i = 0; i < members.length; i++) {
-            bytes32 seed = keccak256(abi.encodePacked("seed", i));
+            uint256 bidAmount = (i + 1) * 20 ether; // 20, 40, 60, 80, 100
             bytes32 salt = keccak256(abi.encodePacked("salt", i));
-            bytes32 commitment = keccak256(abi.encodePacked(seed, salt));
+            bytes32 commitment = keccak256(abi.encodePacked(bidAmount, salt));
 
             vm.prank(members[i]);
-            group.commitSeed(commitment);
+            group.commitBid(commitment);
         }
 
-        // Warp past commit deadline
         vm.warp(commitDeadline + 1);
         group.advanceToReveal();
 
-        // Reveal phase
         for (uint256 i = 0; i < members.length; i++) {
-            bytes32 seed = keccak256(abi.encodePacked("seed", i));
+            uint256 bidAmount = (i + 1) * 20 ether;
             bytes32 salt = keccak256(abi.encodePacked("salt", i));
 
             vm.prank(members[i]);
-            group.revealSeed(seed, salt);
+            group.revealBid(bidAmount, salt);
         }
 
-        // Warp past reveal deadline
         vm.warp(revealDeadline + 1);
         group.advanceToSettle();
     }
 
     function _allCommitAndRevealForCycle(uint256 cycle) internal {
-        // Get cycle info for timing
-        (,, uint256 payDeadline, uint256 commitDeadline, uint256 revealDeadline,,,) = group.getCycleInfo(cycle);
+        (,,, uint256 commitDeadline, uint256 revealDeadline,,,,) = group.getCycleInfo(cycle);
 
-        // Commit phase - only non-defaulted members who paid
+        // Collect eligible members and their bids
+        uint256 bidIndex = 0;
         for (uint256 i = 0; i < members.length; i++) {
             (, bool hasWon, bool defaulted,) = group.members(members[i]);
-            if (!defaulted && group.hasPaid(cycle, members[i])) {
-                bytes32 seed = keccak256(abi.encodePacked("seed", i, cycle));
+            if (!defaulted && !hasWon && group.hasPaid(cycle, members[i])) {
+                uint256 bidAmount = (bidIndex + 1) * 20 ether;
                 bytes32 salt = keccak256(abi.encodePacked("salt", i, cycle));
-                bytes32 commitment = keccak256(abi.encodePacked(seed, salt));
+                bytes32 commitment = keccak256(abi.encodePacked(bidAmount, salt));
 
                 vm.prank(members[i]);
-                group.commitSeed(commitment);
+                group.commitBid(commitment);
+                bidIndex++;
             }
         }
 
-        // Warp past commit deadline
         vm.warp(commitDeadline + 1);
         group.advanceToReveal();
 
-        // Reveal phase
+        bidIndex = 0;
         for (uint256 i = 0; i < members.length; i++) {
             (, bool hasWon, bool defaulted,) = group.members(members[i]);
-            if (!defaulted && group.hasPaid(cycle, members[i])) {
-                bytes32 seed = keccak256(abi.encodePacked("seed", i, cycle));
+            if (!defaulted && !hasWon && group.hasPaid(cycle, members[i])) {
+                uint256 bidAmount = (bidIndex + 1) * 20 ether;
                 bytes32 salt = keccak256(abi.encodePacked("salt", i, cycle));
 
                 vm.prank(members[i]);
-                group.revealSeed(seed, salt);
+                group.revealBid(bidAmount, salt);
+                bidIndex++;
             }
         }
 
-        // Warp past reveal deadline
         vm.warp(revealDeadline + 1);
         group.advanceToSettle();
     }

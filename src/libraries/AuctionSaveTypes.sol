@@ -26,8 +26,8 @@ library AuctionSaveTypes {
     enum CycleStatus {
         NOT_STARTED, // Cycle hasn't begun
         COLLECTING, // Collecting contributions
-        COMMITTING, // Members committing random seeds
-        REVEALING, // Members revealing seeds
+        COMMITTING, // Members committing sealed bids
+        REVEALING, // Members revealing bids
         READY_TO_SETTLE, // Ready to pick winner and distribute
         SETTLED // Cycle complete, winner paid
     }
@@ -54,15 +54,15 @@ library AuctionSaveTypes {
         uint256 totalContributions;
         uint256 contributorCount;
         address winner;
-        bytes32 finalEntropy; // Combined entropy from all reveals
+        uint256 winningBid; // The highest bid amount
         uint256 revealCount;
     }
 
-    /// @notice Contribution tracking per cycle per member
+    /// @notice Contribution and bid tracking per cycle per member
     struct Contribution {
         bool paid;
-        bytes32 commitment; // keccak256(seed, salt)
-        bytes32 revealedSeed;
+        bytes32 commitment; // keccak256(bidAmount, salt)
+        uint256 revealedBid; // The revealed bid amount
         bool revealed;
     }
 

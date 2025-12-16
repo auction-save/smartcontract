@@ -52,10 +52,10 @@ contract AuctionSaveGroup is ReentrancyGuard {
     event MemberJoined(address indexed member, uint256 memberCount);
     event GroupActivated(uint256 startTime);
     event ContributionPaid(uint256 indexed cycle, address indexed member, uint256 amount);
-    event SeedCommitted(uint256 indexed cycle, address indexed member);
-    event SeedRevealed(uint256 indexed cycle, address indexed member);
+    event BidCommitted(uint256 indexed cycle, address indexed member);
+    event BidRevealed(uint256 indexed cycle, address indexed member, uint256 bidAmount);
     event MemberDefaulted(uint256 indexed cycle, address indexed member, uint256 penaltyAmount);
-    event CycleSettled(uint256 indexed cycle, address indexed winner, uint256 payout);
+    event AuctionSettled(uint256 indexed cycle, address indexed winner, uint256 winningBid, uint256 payout);
     event GroupCompleted();
     event SecurityRefunded(address indexed member, uint256 amount);
     event PenaltyDistributed(address indexed member, uint256 amount);
@@ -90,6 +90,7 @@ contract AuctionSaveGroup is ReentrancyGuard {
     error NotDeveloper();
     error NoFeesToWithdraw();
     error NothingToRefund();
+    error BidTooHigh();
 
     /*//////////////////////////////////////////////////////////////
                                 MODIFIERS
@@ -185,7 +186,7 @@ contract AuctionSaveGroup is ReentrancyGuard {
             totalContributions: 0,
             contributorCount: 0,
             winner: address(0),
-            finalEntropy: bytes32(0),
+            winningBid: 0,
             revealCount: 0
         });
     }
@@ -248,12 +249,15 @@ contract AuctionSaveGroup is ReentrancyGuard {
     }
 
     /*//////////////////////////////////////////////////////////////
-                            COMMIT-REVEAL RANDOMNESS
+                            COMMIT-REVEAL AUCTION
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Commit a seed hash for random winner selection
-    /// @param commitment keccak256(abi.encodePacked(seed, salt))
-    function commitSeed(bytes32 commitment) external onlyActiveMember onlyActiveGroup {
+    /// @notice Commit a sealed bid for the auction
+    /// @dev Demo: "Participant 1 commits a bid of 50 USDT" - bids are sealed
+    /// @param commitment keccak256(abi.encodePacked(bidAmount, salt))
+    /// @dev bidAmount is how much the participant is willing to "give up" from the pool
+    ///      Higher bid = more willing to sacrifice = wins the auction
+    function commitBid(bytes32 commitment) external onlyActiveMember onlyActiveGroup {
         AuctionSaveTypes.Cycle storage cycle = cycles[currentCycle];
         AuctionSaveTypes.Contribution storage contrib = contributions[currentCycle][msg.sender];
 
@@ -261,9 +265,10 @@ contract AuctionSaveGroup is ReentrancyGuard {
         if (block.timestamp > cycle.commitDeadline) revert CommitWindowClosed();
         if (!contrib.paid) revert NotPaid();
         if (contrib.commitment != bytes32(0)) revert AlreadyCommitted();
+        if (members[msg.sender].hasWon) revert AlreadyWon();
 
         contrib.commitment = commitment;
-        emit SeedCommitted(currentCycle, msg.sender);
+        emit BidCommitted(currentCycle, msg.sender);
     }
 
     /// @notice Advance to reveal phase after commit deadline (anyone can call)
@@ -276,10 +281,11 @@ contract AuctionSaveGroup is ReentrancyGuard {
         cycle.status = AuctionSaveTypes.CycleStatus.REVEALING;
     }
 
-    /// @notice Reveal the seed that was committed
-    /// @param seed The original seed value
+    /// @notice Reveal the bid that was committed
+    /// @dev Demo: "Bids are verified against commitments"
+    /// @param bidAmount The bid amount (in token units, e.g., 50 USDT = 50e18)
     /// @param salt The salt used in commitment
-    function revealSeed(bytes32 seed, bytes32 salt) external onlyActiveMember onlyActiveGroup {
+    function revealBid(uint256 bidAmount, bytes32 salt) external onlyActiveMember onlyActiveGroup {
         AuctionSaveTypes.Cycle storage cycle = cycles[currentCycle];
         AuctionSaveTypes.Contribution storage contrib = contributions[currentCycle][msg.sender];
 
@@ -287,15 +293,19 @@ contract AuctionSaveGroup is ReentrancyGuard {
         if (block.timestamp > cycle.revealDeadline) revert RevealWindowClosed();
         if (contrib.revealed) revert AlreadyRevealed();
 
-        bytes32 expectedCommitment = keccak256(abi.encodePacked(seed, salt));
+        // Verify commitment
+        bytes32 expectedCommitment = keccak256(abi.encodePacked(bidAmount, salt));
         if (contrib.commitment != expectedCommitment) revert InvalidReveal();
 
-        contrib.revealedSeed = seed;
+        // Bid cannot exceed pool size (sanity check)
+        uint256 maxBid = contributionAmount * groupSize;
+        if (bidAmount > maxBid) revert BidTooHigh();
+
+        contrib.revealedBid = bidAmount;
         contrib.revealed = true;
-        cycle.finalEntropy = keccak256(abi.encodePacked(cycle.finalEntropy, seed));
         cycle.revealCount++;
 
-        emit SeedRevealed(currentCycle, msg.sender);
+        emit BidRevealed(currentCycle, msg.sender, bidAmount);
     }
 
     /// @notice Advance to ready-to-settle after reveal deadline (anyone can call)
@@ -309,46 +319,45 @@ contract AuctionSaveGroup is ReentrancyGuard {
     }
 
     /*//////////////////////////////////////////////////////////////
-                            SETTLE CYCLE
+                            SETTLE AUCTION
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Settle the current cycle - pick winner and distribute funds
+    /// @notice Settle the auction - HIGHEST BIDDER WINS
+    /// @dev Demo: "Highest bidder wins the auction" -> "Winner receives the pool funds"
     function settleCycle() external onlyActiveGroup nonReentrant {
         AuctionSaveTypes.Cycle storage cycle = cycles[currentCycle];
 
         if (cycle.status != AuctionSaveTypes.CycleStatus.READY_TO_SETTLE) revert NotReadyToSettle();
 
-        // Build eligible winners list (paid, not defaulted, not already won)
-        address[] memory eligible = new address[](memberList.length);
-        uint256 eligibleCount = 0;
+        // Find HIGHEST BIDDER among eligible members
+        address winner = address(0);
+        uint256 highestBid = 0;
 
         for (uint256 i = 0; i < memberList.length; i++) {
             address member = memberList[i];
             AuctionSaveTypes.Member storage m = members[member];
+            AuctionSaveTypes.Contribution storage contrib = contributions[currentCycle][member];
 
-            if (m.joined && !m.defaulted && !m.hasWon && contributions[currentCycle][member].paid) {
-                eligible[eligibleCount] = member;
-                eligibleCount++;
+            // Eligible: joined, not defaulted, not already won, paid, revealed
+            if (m.joined && !m.defaulted && !m.hasWon && contrib.paid && contrib.revealed) {
+                if (contrib.revealedBid > highestBid) {
+                    highestBid = contrib.revealedBid;
+                    winner = member;
+                }
             }
         }
 
-        require(eligibleCount > 0, "No eligible winners");
-
-        // Determine winner using combined entropy
-        bytes32 entropy = cycle.finalEntropy;
-        if (entropy == bytes32(0)) {
-            // Fallback if no one revealed (use blockhash - less secure but prevents stuck)
-            entropy = keccak256(abi.encodePacked(blockhash(block.number - 1), currentCycle));
-        }
-
-        uint256 winnerIndex = uint256(entropy) % eligibleCount;
-        address winner = eligible[winnerIndex];
+        require(winner != address(0), "No eligible winner");
 
         // Mark winner
         members[winner].hasWon = true;
         cycle.winner = winner;
+        cycle.winningBid = highestBid;
 
-        // Calculate payout
+        // Calculate payout: pool minus dev fee
+        // The winning bid represents how much winner is willing to "sacrifice"
+        // In this implementation, winner gets full pool minus dev fee
+        // (bid is just for priority/auction mechanism)
         uint256 pool = cycle.totalContributions;
         uint256 devFee = (pool * AuctionSaveTypes.DEV_FEE_BPS) / AuctionSaveTypes.BPS;
         uint256 payout = pool - devFee;
@@ -359,7 +368,7 @@ contract AuctionSaveGroup is ReentrancyGuard {
         token.safeTransfer(winner, payout);
 
         cycle.status = AuctionSaveTypes.CycleStatus.SETTLED;
-        emit CycleSettled(currentCycle, winner, payout);
+        emit AuctionSettled(currentCycle, winner, highestBid, payout);
 
         // Advance to next cycle or complete
         if (currentCycle >= totalCycles) {
@@ -476,7 +485,8 @@ contract AuctionSaveGroup is ReentrancyGuard {
             uint256 revealDeadline,
             uint256 totalContributions,
             uint256 contributorCount,
-            address winner
+            address winner,
+            uint256 winningBid
         )
     {
         AuctionSaveTypes.Cycle storage c = cycles[cycleNum];
@@ -488,7 +498,8 @@ contract AuctionSaveGroup is ReentrancyGuard {
             c.revealDeadline,
             c.totalContributions,
             c.contributorCount,
-            c.winner
+            c.winner,
+            c.winningBid
         );
     }
 
@@ -505,5 +516,10 @@ contract AuctionSaveGroup is ReentrancyGuard {
     /// @notice Check if member has revealed for a cycle
     function hasRevealed(uint256 cycleNum, address member) external view returns (bool) {
         return contributions[cycleNum][member].revealed;
+    }
+
+    /// @notice Get revealed bid for a member in a cycle
+    function getRevealedBid(uint256 cycleNum, address member) external view returns (uint256) {
+        return contributions[cycleNum][member].revealedBid;
     }
 }
