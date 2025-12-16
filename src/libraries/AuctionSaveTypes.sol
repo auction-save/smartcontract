@@ -8,8 +8,12 @@ library AuctionSaveTypes {
                                 CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
-    uint256 constant BPS = 10_000; // Basis points denominator
+    uint256 constant GROUP_SIZE = 5;
+    uint256 constant COMMITMENT = 50 ether; // Contribution amount per cycle
+    uint256 constant SECURITY_DEPOSIT = 50 ether;
+    uint256 constant MAX_BID_BPS = 3000; // 30% max bid
     uint256 constant DEV_FEE_BPS = 100; // 1% developer fee
+    uint256 constant BPS = 10_000; // Basis points denominator
 
     /*//////////////////////////////////////////////////////////////
                                 ENUMS

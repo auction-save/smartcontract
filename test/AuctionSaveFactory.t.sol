@@ -6,7 +6,7 @@ import "../src/AuctionSaveFactory.sol";
 import "../src/AuctionSaveGroup.sol";
 import "./mocks/MockERC20.sol";
 
-/// @title AuctionSaveFactoryTest - Comprehensive tests for Factory contract
+/// @title AuctionSaveFactoryTest - Tests for Factory contract (per boss's design)
 contract AuctionSaveFactoryTest is Test {
     AuctionSaveFactory public factory;
     MockERC20 public token;
@@ -28,22 +28,16 @@ contract AuctionSaveFactoryTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        CREATE GROUP TESTS
+                        CREATE GROUP TESTS (per boss's design)
     //////////////////////////////////////////////////////////////*/
 
     function test_CreateGroup_Success() public {
         vm.prank(creator);
         address groupAddr = factory.createGroup(
             address(token),
-            5, // groupSize
-            100 ether, // contribution
-            50 ether, // security deposit
-            5, // totalCycles
-            1 weeks, // cycleDuration
-            2 days, // payWindow
-            1 days, // commitWindow
-            1 days, // revealWindow
-            false // demoMode
+            block.timestamp,
+            1 weeks,
+            false
         );
 
         assertTrue(groupAddr != address(0));
@@ -52,104 +46,43 @@ contract AuctionSaveFactoryTest is Test {
     }
 
     function test_CreateGroup_EmitsEvent() public {
-        // Check that event is emitted with correct indexed params (creator, token)
         vm.expectEmit(false, true, false, false);
-        emit AuctionSaveFactory.GroupCreated(
-            address(0), // group address - we don't check this
-            creator,
-            address(token),
-            5,
-            100 ether,
-            5
-        );
+        emit AuctionSaveFactory.GroupCreated(address(0), creator);
 
         vm.prank(creator);
-        factory.createGroup(address(token), 5, 100 ether, 50 ether, 5, 1 weeks, 2 days, 1 days, 1 days, false);
-    }
-
-    function test_CreateGroup_RevertWhen_InvalidToken() public {
-        vm.prank(creator);
-        vm.expectRevert("Invalid token");
-        factory.createGroup(address(0), 5, 100 ether, 50 ether, 5, 1 weeks, 2 days, 1 days, 1 days, false);
-    }
-
-    function test_CreateGroup_RevertWhen_GroupTooSmall() public {
-        vm.prank(creator);
-        vm.expectRevert("Group too small");
-        factory.createGroup(address(token), 1, 100 ether, 50 ether, 1, 1 weeks, 2 days, 1 days, 1 days, false);
-    }
-
-    function test_CreateGroup_RevertWhen_InvalidContribution() public {
-        vm.prank(creator);
-        vm.expectRevert("Invalid contribution");
-        factory.createGroup(address(token), 5, 0, 50 ether, 5, 1 weeks, 2 days, 1 days, 1 days, false);
-    }
-
-    function test_CreateGroup_RevertWhen_InvalidCycles() public {
-        vm.prank(creator);
-        vm.expectRevert("Invalid cycles");
-        factory.createGroup(address(token), 5, 100 ether, 50 ether, 0, 1 weeks, 2 days, 1 days, 1 days, false);
-    }
-
-    function test_CreateGroup_RevertWhen_InvalidDuration() public {
-        vm.prank(creator);
-        vm.expectRevert("Invalid duration");
-        factory.createGroup(address(token), 5, 100 ether, 50 ether, 5, 0, 2 days, 1 days, 1 days, false);
-    }
-
-    function test_CreateGroup_RevertWhen_InvalidPayWindow() public {
-        vm.prank(creator);
-        vm.expectRevert("Invalid pay window");
-        factory.createGroup(address(token), 5, 100 ether, 50 ether, 5, 1 weeks, 0, 1 days, 1 days, false);
-    }
-
-    function test_CreateGroup_RevertWhen_InvalidCommitWindow() public {
-        vm.prank(creator);
-        vm.expectRevert("Invalid commit window");
-        factory.createGroup(address(token), 5, 100 ether, 50 ether, 5, 1 weeks, 2 days, 0, 1 days, false);
-    }
-
-    function test_CreateGroup_RevertWhen_InvalidRevealWindow() public {
-        vm.prank(creator);
-        vm.expectRevert("Invalid reveal window");
-        factory.createGroup(address(token), 5, 100 ether, 50 ether, 5, 1 weeks, 2 days, 1 days, 0, false);
+        factory.createGroup(address(token), block.timestamp, 1 weeks, false);
     }
 
     function test_CreateGroup_MultipleGroups() public {
         vm.startPrank(creator);
 
-        address group1 =
-            factory.createGroup(address(token), 5, 100 ether, 50 ether, 5, 1 weeks, 2 days, 1 days, 1 days, false);
-        address group2 =
-            factory.createGroup(address(token), 3, 50 ether, 25 ether, 3, 2 weeks, 3 days, 2 days, 2 days, false);
-        address group3 =
-            factory.createGroup(address(token), 10, 200 ether, 100 ether, 10, 4 weeks, 1 weeks, 3 days, 3 days, false);
+        address group1 = factory.createGroup(address(token), block.timestamp, 1 weeks, false);
+        address group2 = factory.createGroup(address(token), block.timestamp, 2 weeks, true);
 
         vm.stopPrank();
 
-        assertEq(factory.getGroupCount(), 3);
+        assertEq(factory.getGroupCount(), 2);
         assertEq(factory.groups(0), group1);
         assertEq(factory.groups(1), group2);
-        assertEq(factory.groups(2), group3);
     }
 
     /*//////////////////////////////////////////////////////////////
                         VIEW FUNCTION TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_GetAllGroups_Empty() public view {
-        address[] memory allGroups = factory.getAllGroups();
-        assertEq(allGroups.length, 0);
+    function test_AllGroups_Empty() public view {
+        address[] memory groups = factory.allGroups();
+        assertEq(groups.length, 0);
     }
 
-    function test_GetAllGroups_WithGroups() public {
+    function test_AllGroups_WithGroups() public {
         vm.startPrank(creator);
-        factory.createGroup(address(token), 5, 100 ether, 50 ether, 5, 1 weeks, 2 days, 1 days, 1 days, false);
-        factory.createGroup(address(token), 3, 50 ether, 25 ether, 3, 2 weeks, 3 days, 2 days, 2 days, false);
+        factory.createGroup(address(token), block.timestamp, 1 weeks, false);
+        factory.createGroup(address(token), block.timestamp, 2 weeks, true);
         vm.stopPrank();
 
-        address[] memory allGroups = factory.getAllGroups();
-        assertEq(allGroups.length, 2);
+        address[] memory groups = factory.allGroups();
+        assertEq(groups.length, 2);
     }
 
     function test_GetGroupCount_Empty() public view {
@@ -158,7 +91,7 @@ contract AuctionSaveFactoryTest is Test {
 
     function test_GetGroupCount_WithGroups() public {
         vm.prank(creator);
-        factory.createGroup(address(token), 5, 100 ether, 50 ether, 5, 1 weeks, 2 days, 1 days, 1 days, false);
+        factory.createGroup(address(token), block.timestamp, 1 weeks, false);
 
         assertEq(factory.getGroupCount(), 1);
     }
@@ -169,21 +102,15 @@ contract AuctionSaveFactoryTest is Test {
 
     function test_CreatedGroup_HasCorrectParameters() public {
         vm.prank(creator);
-        address groupAddr =
-            factory.createGroup(address(token), 5, 100 ether, 50 ether, 5, 1 weeks, 2 days, 1 days, 1 days, false);
+        address groupAddr = factory.createGroup(address(token), block.timestamp + 1 hours, 1 weeks, true);
 
         AuctionSaveGroup group = AuctionSaveGroup(groupAddr);
 
         assertEq(group.creator(), creator);
         assertEq(group.developer(), developer);
         assertEq(address(group.token()), address(token));
-        assertEq(group.groupSize(), 5);
-        assertEq(group.contributionAmount(), 100 ether);
-        assertEq(group.securityDeposit(), 50 ether);
-        assertEq(group.totalCycles(), 5);
+        assertEq(group.startTime(), block.timestamp + 1 hours);
         assertEq(group.cycleDuration(), 1 weeks);
-        assertEq(group.payWindow(), 2 days);
-        assertEq(group.commitWindow(), 1 days);
-        assertEq(group.revealWindow(), 1 days);
+        assertTrue(group.demoMode());
     }
 }

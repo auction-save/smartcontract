@@ -22,7 +22,7 @@ contract DeployAuctionSave is Script {
         vm.stopBroadcast();
     }
 
-    /// @notice Deploy factory and create a demo group
+    /// @notice Deploy factory and create a demo group (per boss's design)
     function runWithDemoGroup() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address developer = vm.envAddress("DEVELOPER_ADDRESS");
@@ -34,25 +34,11 @@ contract DeployAuctionSave is Script {
         AuctionSaveFactory factory = new AuctionSaveFactory(developer);
         console.log("AuctionSaveFactory deployed at:", address(factory));
 
-        // Create demo group with reasonable parameters
-        // Group size: 5 members
-        // Contribution: 100 tokens per cycle
-        // Security deposit: 50 tokens
-        // Total cycles: 5
-        // Cycle duration: 1 week
-        // Pay window: 2 days
-        // Commit window: 1 day
-        // Reveal window: 1 day
+        // Create demo group (per boss's design)
         address group = factory.createGroup(
             token,
-            5, // groupSize
-            100 ether, // contributionAmount (adjust based on token decimals)
-            50 ether, // securityDeposit
-            5, // totalCycles
-            7 days, // cycleDuration
-            2 days, // payWindow
-            1 days, // commitWindow
-            1 days, // revealWindow
+            block.timestamp,
+            7 days,
             false // demoMode
         );
         console.log("Demo AuctionSavePool deployed at:", group);
@@ -60,7 +46,7 @@ contract DeployAuctionSave is Script {
         vm.stopBroadcast();
     }
 
-    /// @notice Deploy for demo mode (shorter time windows for testing)
+    /// @notice Deploy for demo mode (per boss's design with speedUpCycle)
     function runDemoMode() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address developer = vm.envAddress("DEVELOPER_ADDRESS");
@@ -72,17 +58,11 @@ contract DeployAuctionSave is Script {
         AuctionSaveFactory factory = new AuctionSaveFactory(developer);
         console.log("AuctionSaveFactory deployed at:", address(factory));
 
-        // Create demo group with SHORT time windows for demo
+        // Create demo group with demoMode=true (per boss's design)
         address group = factory.createGroup(
             token,
-            5, // groupSize
-            100 ether, // contributionAmount
-            50 ether, // securityDeposit
-            5, // totalCycles
-            10 minutes, // cycleDuration (short for demo)
-            3 minutes, // payWindow
-            2 minutes, // commitWindow
-            2 minutes, // revealWindow
+            block.timestamp,
+            10 minutes, // short for demo
             true // demoMode - enables speedUpCycle()
         );
         console.log("Demo AuctionSavePool (fast mode) deployed at:", group);
@@ -107,17 +87,11 @@ contract DeployAuctionSave is Script {
         AuctionSaveFactory factory = new AuctionSaveFactory(developer);
         console.log("AuctionSaveFactory deployed at:", address(factory));
 
-        // 3. Create demo group with SHORT time windows
+        // 3. Create demo group (per boss's design)
         address group = factory.createGroup(
             address(mockToken),
-            5, // groupSize
-            100 ether, // contributionAmount (100 mUSDT)
-            50 ether, // securityDeposit (50 mUSDT)
-            5, // totalCycles
-            10 minutes, // cycleDuration (short for demo)
-            3 minutes, // payWindow
-            2 minutes, // commitWindow
-            2 minutes, // revealWindow
+            block.timestamp,
+            10 minutes, // short for demo
             true // demoMode - enables speedUpCycle()
         );
         console.log("Demo AuctionSavePool deployed at:", group);
@@ -130,7 +104,7 @@ contract DeployAuctionSave is Script {
         console.log("");
         console.log("Next steps:");
         console.log("1. Call mockToken.faucet() to get test tokens");
-        console.log("2. Approve pool to spend your tokens");
+        console.log("2. Approve pool to spend your tokens (100 ether per join)");
         console.log("3. Join the pool with 5 accounts");
 
         vm.stopBroadcast();
