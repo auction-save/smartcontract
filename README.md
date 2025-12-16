@@ -224,6 +224,40 @@ forge script script/DeployAuctionSave.s.sol:DeployAuctionSave \
 - [AuctionSaveFactory](https://sepolia-blockscout.lisk.com/address/0x05b629F81DB435EdAf751d6262ecC1Db551473f3): 0x05b629F81DB435EdAf751d6262ecC1Db551473f3
 - [Demo Pool](https://sepolia-blockscout.lisk.com/address/0xe868Cafc0afBeCf1fdbA5bAcadF81A714fD0eF12): 0xe868Cafc0afBeCf1fdbA5bAcadF81A714fD0eF12
 
+## Frontend Integration (Quick)
+
+### Network (must match wallet)
+
+- **Chain:** Lisk Sepolia
+- **Chain ID:** `4202`
+- **RPC:** https://rpc.sepolia-api.lisk.com
+- **Explorer:** https://sepolia-blockscout.lisk.com
+
+### What the frontend needs
+
+- **Contract addresses**
+  - Use the values in `## DEPLOYMENT SUMMARY`.
+- **ABIs** (after `forge build`, use the `abi` field)
+  - `out/AuctionSaveFactory.sol/AuctionSaveFactory.json`
+  - `out/AuctionSaveGroup.sol/AuctionSaveGroup.json`
+  - `out/MockUSDT.sol/MockUSDT.json`
+
+### Frontend environment variables (Next.js)
+
+Create/update `web/.env.local`:
+
+- `NEXT_PUBLIC_CHAIN_ID=4202`
+- `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=<your_walletconnect_project_id>`
+- `NEXT_PUBLIC_MOCK_USDT_ADDRESS=<MockUSDT_address>`
+- `NEXT_PUBLIC_FACTORY_ADDRESS=<AuctionSaveFactory_address>`
+- `NEXT_PUBLIC_DEMO_POOL_ADDRESS=<AuctionSaveGroup_address>` (optional)
+
+### Checklist
+
+- Restart the frontend dev server after changing `.env.local`.
+- Ensure the wallet is connected to chain `4202`.
+- Ensure ABI files match the deployed contracts.
+
 ## License
 
 MIT
