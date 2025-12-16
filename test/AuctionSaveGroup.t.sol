@@ -7,7 +7,7 @@ import "../src/AuctionSaveGroup.sol";
 import "../src/libraries/AuctionSaveTypes.sol";
 import "./mocks/MockERC20.sol";
 
-/// @title AuctionSaveGroupTest - Tests for AuctionSaveGroup (per boss's design)
+/// @title AuctionSaveGroupTest - Tests for AuctionSaveGroup
 contract AuctionSaveGroupTest is Test {
     AuctionSaveFactory public factory;
     AuctionSaveGroup public group;
@@ -49,7 +49,7 @@ contract AuctionSaveGroupTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                            JOIN TESTS (per boss's design)
+                            JOIN TESTS
     //////////////////////////////////////////////////////////////*/
 
     function test_Join_Success() public {
@@ -67,7 +67,7 @@ contract AuctionSaveGroupTest is Test {
         vm.prank(alice);
         group.join();
 
-        // Per boss's design: COMMITMENT + SECURITY_DEPOSIT = 100 ether
+        // COMMITMENT + SECURITY_DEPOSIT = 100 ether
         uint256 expectedTransfer = AuctionSaveTypes.COMMITMENT + AuctionSaveTypes.SECURITY_DEPOSIT;
         assertEq(token.balanceOf(alice), balanceBefore - expectedTransfer);
     }
@@ -211,7 +211,7 @@ contract AuctionSaveGroupTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        PENALTY TESTS (per boss's design)
+                        PENALTY TESTS
     //////////////////////////////////////////////////////////////*/
 
     function test_Penalize_Success() public {
@@ -234,7 +234,7 @@ contract AuctionSaveGroupTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        SPEED UP TESTS (per boss's design)
+                        SPEED UP TESTS
     //////////////////////////////////////////////////////////////*/
 
     function test_SpeedUpCycle_Success() public {

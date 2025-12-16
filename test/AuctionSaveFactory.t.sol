@@ -6,7 +6,7 @@ import "../src/AuctionSaveFactory.sol";
 import "../src/AuctionSaveGroup.sol";
 import "./mocks/MockERC20.sol";
 
-/// @title AuctionSaveFactoryTest - Tests for Factory contract (per boss's design)
+/// @title AuctionSaveFactoryTest - Tests for Factory contract
 contract AuctionSaveFactoryTest is Test {
     AuctionSaveFactory public factory;
     MockERC20 public token;
@@ -28,17 +28,12 @@ contract AuctionSaveFactoryTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        CREATE GROUP TESTS (per boss's design)
+                        CREATE GROUP TESTS
     //////////////////////////////////////////////////////////////*/
 
     function test_CreateGroup_Success() public {
         vm.prank(creator);
-        address groupAddr = factory.createGroup(
-            address(token),
-            block.timestamp,
-            1 weeks,
-            false
-        );
+        address groupAddr = factory.createGroup(address(token), block.timestamp, 1 weeks, false);
 
         assertTrue(groupAddr != address(0));
         assertEq(factory.getGroupCount(), 1);
