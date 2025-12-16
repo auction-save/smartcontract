@@ -52,7 +52,8 @@ contract DeployAuctionSave is Script {
             7 days, // cycleDuration
             2 days, // payWindow
             1 days, // commitWindow
-            1 days // revealWindow
+            1 days, // revealWindow
+            false // demoMode
         );
         console.log("Demo AuctionSavePool deployed at:", group);
 
@@ -81,7 +82,8 @@ contract DeployAuctionSave is Script {
             10 minutes, // cycleDuration (short for demo)
             3 minutes, // payWindow
             2 minutes, // commitWindow
-            2 minutes // revealWindow
+            2 minutes, // revealWindow
+            true // demoMode - enables speedUpCycle()
         );
         console.log("Demo AuctionSavePool (fast mode) deployed at:", group);
 
@@ -115,7 +117,8 @@ contract DeployAuctionSave is Script {
             10 minutes, // cycleDuration (short for demo)
             3 minutes, // payWindow
             2 minutes, // commitWindow
-            2 minutes // revealWindow
+            2 minutes, // revealWindow
+            true // demoMode - enables speedUpCycle()
         );
         console.log("Demo AuctionSavePool deployed at:", group);
 

@@ -41,7 +41,9 @@ library AuctionSaveTypes {
         bool joined;
         bool hasWon; // Has won in any cycle (can't win again)
         bool defaulted; // Has defaulted (kicked from future cycles)
+        bool hasOffset; // Has commitment offset (one-cycle relief after winning)
         uint256 securityDeposit; // Amount locked as security
+        uint256 withheld; // 20% winning portion withheld until completion
     }
 
     /// @notice Per-cycle state

@@ -47,7 +47,8 @@ contract AuctionSaveGroupTest is Test {
             CYCLE_DURATION,
             PAY_WINDOW,
             COMMIT_WINDOW,
-            REVEAL_WINDOW
+            REVEAL_WINDOW,
+            false // demoMode
         );
         group = AuctionSaveGroup(groupAddr);
 
@@ -68,7 +69,7 @@ contract AuctionSaveGroupTest is Test {
         vm.prank(alice);
         group.join();
 
-        (bool joined,,,) = group.members(alice);
+        (bool joined,,,,,) = group.members(alice);
         assertTrue(joined);
         assertEq(group.getMemberCount(), 1);
     }
@@ -223,11 +224,13 @@ contract AuctionSaveGroupTest is Test {
         assertEq(winner, charlie);
         assertEq(winningBid, 100 ether);
 
-        // Charlie should receive pool minus dev fee minus winningBid (bid is now economic)
-        // payout = pool - devFee - winningBid
+        // Charlie should receive 80% of (pool minus dev fee minus winningBid)
+        // 20% is withheld until group completion (per boss's design)
+        // payout = 80% of (pool - devFee - winningBid)
         uint256 expectedPool = CONTRIBUTION * GROUP_SIZE;
         uint256 expectedFee = (expectedPool * 100) / 10000;
-        uint256 expectedPayout = expectedPool - expectedFee - winningBid;
+        uint256 afterBid = expectedPool - expectedFee - winningBid;
+        uint256 expectedPayout = (afterBid * 80) / 100; // 80% immediate payout
         assertEq(token.balanceOf(charlie), charlieBalanceBefore + expectedPayout);
     }
 
@@ -236,7 +239,7 @@ contract AuctionSaveGroupTest is Test {
         group.settleCycle();
 
         (,,,,,,, address winner1,) = group.getCycleInfo(1);
-        (, bool hasWon,,) = group.members(winner1);
+        (, bool hasWon,,,,) = group.members(winner1);
         assertTrue(hasWon);
 
         // Cycle 2: Winner from cycle 1 cannot commit bid
@@ -403,11 +406,13 @@ contract AuctionSaveGroupTest is Test {
 
         group.settleCycle();
 
-        // Charlie's payout = pool - devFee - winningBid
+        // Charlie's payout = 80% of (pool - devFee - winningBid)
+        // 20% is withheld until group completion (per boss's design)
         uint256 pool = CONTRIBUTION * GROUP_SIZE; // 500 ether
         uint256 devFee = (pool * 100) / 10000; // 5 ether
         uint256 winningBid = 100 ether;
-        uint256 expectedCharliePayout = pool - devFee - winningBid; // 395 ether
+        uint256 afterBid = pool - devFee - winningBid; // 395 ether
+        uint256 expectedCharliePayout = (afterBid * 80) / 100; // 316 ether (80% immediate)
 
         assertEq(token.balanceOf(charlie), charlieBalanceBefore + expectedCharliePayout);
 
@@ -531,7 +536,7 @@ contract AuctionSaveGroupTest is Test {
         group.processDefaults();
 
         // Check bob is defaulted
-        (,, bool bobDefaulted,) = group.members(bob);
+        (,, bool bobDefaulted,,,) = group.members(bob);
         assertTrue(bobDefaulted);
 
         // Check cycle advanced to COMMITTING
@@ -1302,7 +1307,7 @@ contract AuctionSaveGroupTest is Test {
 
     function _allPayContributionForCycle(uint256 cycle) internal {
         for (uint256 i = 0; i < members.length; i++) {
-            (,, bool defaulted,) = group.members(members[i]);
+            (,, bool defaulted,,,) = group.members(members[i]);
             if (!defaulted) {
                 vm.prank(members[i]);
                 group.payContribution();
@@ -1344,7 +1349,7 @@ contract AuctionSaveGroupTest is Test {
         // Collect eligible members and their bids
         uint256 bidIndex = 0;
         for (uint256 i = 0; i < members.length; i++) {
-            (, bool hasWon, bool defaulted,) = group.members(members[i]);
+            (, bool hasWon, bool defaulted,,,) = group.members(members[i]);
             if (!defaulted && !hasWon && group.hasPaid(cycle, members[i])) {
                 uint256 bidAmount = (bidIndex + 1) * 20 ether;
                 bytes32 salt = keccak256(abi.encodePacked("salt", i, cycle));
@@ -1361,7 +1366,7 @@ contract AuctionSaveGroupTest is Test {
 
         bidIndex = 0;
         for (uint256 i = 0; i < members.length; i++) {
-            (, bool hasWon, bool defaulted,) = group.members(members[i]);
+            (, bool hasWon, bool defaulted,,,) = group.members(members[i]);
             if (!defaulted && !hasWon && group.hasPaid(cycle, members[i])) {
                 uint256 bidAmount = (bidIndex + 1) * 20 ether;
                 bytes32 salt = keccak256(abi.encodePacked("salt", i, cycle));

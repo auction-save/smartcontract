@@ -28,6 +28,7 @@ contract AuctionSaveGroup is ReentrancyGuard {
     uint256 public immutable payWindow;
     uint256 public immutable commitWindow;
     uint256 public immutable revealWindow;
+    bool public immutable demoMode;
 
     /*//////////////////////////////////////////////////////////////
                                 STATE
@@ -61,6 +62,8 @@ contract AuctionSaveGroup is ReentrancyGuard {
     event SecurityRefunded(address indexed member, uint256 amount);
     event PenaltyDistributed(address indexed member, uint256 amount);
     event DevFeeWithdrawn(address indexed developer, uint256 amount);
+    event SpeedUp(uint256 newCycleStart);
+    event WithheldReleased(address indexed member, uint256 amount);
 
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
@@ -95,6 +98,8 @@ contract AuctionSaveGroup is ReentrancyGuard {
     error NoCommitment();
     error PayDeadlineNotPassed();
     error InvalidCommitment();
+    error NotDemoMode();
+    error NothingWithheld();
 
     /*//////////////////////////////////////////////////////////////
                                 MODIFIERS
@@ -131,7 +136,8 @@ contract AuctionSaveGroup is ReentrancyGuard {
         uint256 _cycleDuration,
         uint256 _payWindow,
         uint256 _commitWindow,
-        uint256 _revealWindow
+        uint256 _revealWindow,
+        bool _demoMode
     ) {
         require(_token != address(0), "Invalid token");
         require(_developer != address(0), "Invalid developer");
@@ -154,6 +160,7 @@ contract AuctionSaveGroup is ReentrancyGuard {
         payWindow = _payWindow;
         commitWindow = _commitWindow;
         revealWindow = _revealWindow;
+        demoMode = _demoMode;
 
         groupStatus = AuctionSaveTypes.GroupStatus.FILLING;
     }
@@ -170,8 +177,14 @@ contract AuctionSaveGroup is ReentrancyGuard {
 
         token.safeTransferFrom(msg.sender, address(this), securityDeposit);
 
-        members[msg.sender] =
-            AuctionSaveTypes.Member({joined: true, hasWon: false, defaulted: false, securityDeposit: securityDeposit});
+        members[msg.sender] = AuctionSaveTypes.Member({
+            joined: true,
+            hasWon: false,
+            defaulted: false,
+            hasOffset: false,
+            securityDeposit: securityDeposit,
+            withheld: 0
+        });
         memberList.push(msg.sender);
 
         emit MemberJoined(msg.sender, memberList.length);
@@ -250,13 +263,14 @@ contract AuctionSaveGroup is ReentrancyGuard {
         cycle.status = AuctionSaveTypes.CycleStatus.COMMITTING;
     }
 
-    /// @dev Penalize a member for defaulting
+    /// @dev Penalize a member for defaulting (per boss's design: forfeit security + withheld)
     function _penalizeMember(address member) internal {
         AuctionSaveTypes.Member storage m = members[member];
-        uint256 penalty = m.securityDeposit;
+        uint256 penalty = m.securityDeposit + m.withheld; // Include withheld per boss's design
 
         m.defaulted = true;
         m.securityDeposit = 0;
+        m.withheld = 0;
         penaltyEscrow += penalty;
 
         emit MemberDefaulted(currentCycle, member, penalty);
@@ -393,32 +407,42 @@ contract AuctionSaveGroup is ReentrancyGuard {
         (address winner, uint256 winningBid) = _selectWinner(currentCycle);
 
         // Mark winner
-        members[winner].hasWon = true;
+        AuctionSaveTypes.Member storage winnerMember = members[winner];
+        winnerMember.hasWon = true;
+        winnerMember.hasOffset = true; // Winner gets commitment offset for next cycle
         cycle.winner = winner;
         cycle.winningBid = winningBid;
 
-        // Calculate payout with bid as discount (bid has economic meaning)
-        // Winner gets: pool - devFee - winningBid
-        // winningBid is distributed to other contributors
+        // Calculate payout with 80/20 split (per boss's design)
+        // 80% immediate payout, 20% withheld until completion
         uint256 pool = cycle.totalContributions;
         uint256 devFee = (pool * AuctionSaveTypes.DEV_FEE_BPS) / AuctionSaveTypes.BPS;
 
         uint256 payoutToWinner = 0;
+        uint256 withheldAmount = 0;
         uint256 discountToDistribute = 0;
 
         if (pool > devFee) {
             uint256 net = pool - devFee;
             // Clamp bid to net (safety)
             uint256 bidClamped = winningBid > net ? net : winningBid;
-            payoutToWinner = net - bidClamped;
+            uint256 afterBid = net - bidClamped;
             discountToDistribute = bidClamped;
+
+            // 80/20 split per boss's design
+            uint256 eighty = (afterBid * 80) / 100;
+            uint256 twenty = afterBid - eighty;
+
+            payoutToWinner = eighty;
+            withheldAmount = twenty;
         }
 
         // Update state BEFORE transfers (CEI pattern)
         devFeeBalance += devFee;
+        winnerMember.withheld += withheldAmount; // Store 20% withheld
         cycle.status = AuctionSaveTypes.CycleStatus.SETTLED;
 
-        // Transfer to winner
+        // Transfer 80% to winner immediately
         if (payoutToWinner > 0) {
             token.safeTransfer(winner, payoutToWinner);
         }
@@ -589,6 +613,20 @@ contract AuctionSaveGroup is ReentrancyGuard {
         emit SecurityRefunded(msg.sender, refund);
     }
 
+    /// @notice Withdraw withheld 20% after group completes (for winners)
+    function withdrawWithheld() external onlyMember nonReentrant {
+        if (groupStatus != AuctionSaveTypes.GroupStatus.COMPLETED) revert GroupNotCompleted();
+
+        AuctionSaveTypes.Member storage m = members[msg.sender];
+        if (m.withheld == 0) revert NothingWithheld();
+
+        uint256 amount = m.withheld;
+        m.withheld = 0;
+
+        token.safeTransfer(msg.sender, amount);
+        emit WithheldReleased(msg.sender, amount);
+    }
+
     /// @notice Distribute penalty escrow to honest members (anyone can call after completion)
     function distributePenaltyEscrow() external nonReentrant {
         if (groupStatus != AuctionSaveTypes.GroupStatus.COMPLETED) revert GroupNotCompleted();
@@ -645,6 +683,26 @@ contract AuctionSaveGroup is ReentrancyGuard {
 
         token.safeTransfer(developer, amount);
         emit DevFeeWithdrawn(developer, amount);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            DEMO SPEED CONTROL
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Speed up cycle for demo purposes (per boss's design)
+    /// @dev Only works in demoMode - sets current cycle deadlines to now
+    function speedUpCycle() external onlyActiveGroup {
+        if (!demoMode) revert NotDemoMode();
+
+        AuctionSaveTypes.Cycle storage cycle = cycles[currentCycle];
+        uint256 now_ = block.timestamp;
+
+        // Move all deadlines to now so phases can advance immediately
+        cycle.payDeadline = now_;
+        cycle.commitDeadline = now_;
+        cycle.revealDeadline = now_;
+
+        emit SpeedUp(now_);
     }
 
     /*//////////////////////////////////////////////////////////////

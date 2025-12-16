@@ -49,6 +49,7 @@ contract AuctionSaveFactory {
     /// @param payWindow Time window to pay contribution (seconds)
     /// @param commitWindow Time window to commit seed (seconds)
     /// @param revealWindow Time window to reveal seed (seconds)
+    /// @param demoMode Enable demo mode for speedUpCycle function
     /// @return group Address of the newly created group contract
     function createGroup(
         address token,
@@ -59,7 +60,8 @@ contract AuctionSaveFactory {
         uint256 cycleDuration,
         uint256 payWindow,
         uint256 commitWindow,
-        uint256 revealWindow
+        uint256 revealWindow,
+        bool demoMode
     ) external returns (address group) {
         require(token != address(0), "Invalid token");
         require(groupSize >= 2, "Group too small");
@@ -81,7 +83,8 @@ contract AuctionSaveFactory {
             cycleDuration,
             payWindow,
             commitWindow,
-            revealWindow
+            revealWindow,
+            demoMode
         );
 
         group = address(newGroup);
