@@ -63,7 +63,7 @@ contract AuctionSaveGroupTest is Test {
 
     function test_Join_TransfersCorrectAmount() public {
         uint256 balanceBefore = token.balanceOf(alice);
-        
+
         vm.prank(alice);
         group.join();
 
@@ -202,7 +202,7 @@ contract AuctionSaveGroupTest is Test {
         for (uint256 i = 0; i < 5; i++) {
             address member = members[i];
             _commitAndRevealBid(member, 1000, keccak256(abi.encodePacked("salt", i)));
-            
+
             vm.warp(group.cycleStart());
             group.resolveCycle();
         }
@@ -219,7 +219,7 @@ contract AuctionSaveGroupTest is Test {
 
         group.penalize(alice);
 
-        (, , bool defaulted,,,) = group.members(alice);
+        (,, bool defaulted,,,) = group.members(alice);
         assertTrue(defaulted);
     }
 
@@ -307,7 +307,7 @@ contract AuctionSaveGroupTest is Test {
         }
 
         // Alice (who won cycle 1) should have withheld balance
-        (, , , , , uint256 withheld) = group.members(alice);
+        (,,,,, uint256 withheld) = group.members(alice);
         assertTrue(withheld > 0);
 
         uint256 balanceBefore = token.balanceOf(alice);
@@ -339,6 +339,317 @@ contract AuctionSaveGroupTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
+                        ADDITIONAL COVERAGE TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_CommitBid_RevertWhen_NotMember() public {
+        _joinAllMembers();
+
+        address nonMember = makeAddr("nonMember");
+        bytes32 commitment = keccak256("test");
+
+        vm.prank(nonMember);
+        vm.expectRevert(AuctionSaveGroup.NotMember.selector);
+        group.commitBid(commitment);
+    }
+
+    function test_CommitBid_RevertWhen_GroupNotActive() public {
+        // Only 1 member joined, group not active
+        vm.prank(alice);
+        group.join();
+
+        bytes32 commitment = keccak256("test");
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.GroupNotActive.selector);
+        group.commitBid(commitment);
+    }
+
+    function test_CommitBid_RevertWhen_MemberPenalized() public {
+        _joinAllMembers();
+
+        group.penalize(alice);
+
+        bytes32 commitment = keccak256("test");
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.MemberPenalized.selector);
+        group.commitBid(commitment);
+    }
+
+    function test_CommitBid_RevertWhen_AlreadyWon() public {
+        _joinAllMembers();
+
+        // Alice wins cycle 1
+        _commitAndRevealBid(alice, 1000, keccak256("salt"));
+        group.resolveCycle();
+
+        // Alice tries to bid again in cycle 2
+        bytes32 commitment = _computeCommitment(1000, keccak256("salt2"), alice, 2);
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.AlreadyWon.selector);
+        group.commitBid(commitment);
+    }
+
+    function test_CommitBid_RevertWhen_AlreadyCommitted() public {
+        _joinAllMembers();
+
+        bytes32 commitment = _computeCommitment(1000, keccak256("salt"), alice, 1);
+        vm.prank(alice);
+        group.commitBid(commitment);
+
+        // Try to commit again
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.AlreadyCommitted.selector);
+        group.commitBid(commitment);
+    }
+
+    function test_CommitBid_RevertWhen_InvalidCommitment() public {
+        _joinAllMembers();
+
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.InvalidCommitment.selector);
+        group.commitBid(bytes32(0));
+    }
+
+    function test_RevealBid_RevertWhen_NotMember() public {
+        _joinAllMembers();
+
+        address nonMember = makeAddr("nonMember");
+        vm.prank(nonMember);
+        vm.expectRevert(AuctionSaveGroup.NotMember.selector);
+        group.revealBid(1000, keccak256("salt"));
+    }
+
+    function test_RevealBid_RevertWhen_MemberPenalized() public {
+        _joinAllMembers();
+
+        bytes32 commitment = _computeCommitment(1000, keccak256("salt"), alice, 1);
+        vm.prank(alice);
+        group.commitBid(commitment);
+
+        group.penalize(alice);
+
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.MemberPenalized.selector);
+        group.revealBid(1000, keccak256("salt"));
+    }
+
+    function test_RevealBid_RevertWhen_AlreadyWon() public {
+        _joinAllMembers();
+
+        // Alice wins cycle 1
+        _commitAndRevealBid(alice, 1000, keccak256("salt"));
+        group.resolveCycle();
+
+        // Bob commits in cycle 2, then Alice tries to reveal (but she already won)
+        // This is a bit contrived but tests the path
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.AlreadyWon.selector);
+        group.revealBid(1000, keccak256("salt"));
+    }
+
+    function test_RevealBid_RevertWhen_NotCommitted() public {
+        _joinAllMembers();
+
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.NotCommitted.selector);
+        group.revealBid(1000, keccak256("salt"));
+    }
+
+    function test_RevealBid_RevertWhen_AlreadyRevealed() public {
+        _joinAllMembers();
+
+        _commitAndRevealBid(alice, 1000, keccak256("salt"));
+
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.AlreadyRevealed.selector);
+        group.revealBid(1000, keccak256("salt"));
+    }
+
+    function test_ResolveCycle_RevertWhen_CycleNotStarted() public {
+        // Create group with future start time
+        vm.prank(creator);
+        address groupAddr = factory.createGroup(
+            address(token),
+            block.timestamp + 1 days, // Future start
+            1 weeks,
+            true
+        );
+        AuctionSaveGroup futureGroup = AuctionSaveGroup(groupAddr);
+
+        for (uint256 i = 0; i < members.length; i++) {
+            vm.prank(members[i]);
+            token.approve(address(futureGroup), type(uint256).max);
+            vm.prank(members[i]);
+            futureGroup.join();
+        }
+
+        vm.expectRevert(AuctionSaveGroup.CycleNotStarted.selector);
+        futureGroup.resolveCycle();
+    }
+
+    function test_ResolveCycle_FallbackWhenNoBids() public {
+        _joinAllMembers();
+
+        // No one bids, first eligible member wins
+        group.resolveCycle();
+
+        // Alice should win as first eligible
+        (, bool hasWon,,,,) = group.members(alice);
+        assertTrue(hasWon);
+    }
+
+    function test_ResolveCycle_EarlyCompleteWhenAllPenalized() public {
+        _joinAllMembers();
+
+        // Penalize all members
+        for (uint256 i = 0; i < members.length; i++) {
+            group.penalize(members[i]);
+        }
+
+        // Resolve should complete early
+        group.resolveCycle();
+
+        assertEq(uint256(group.groupStatus()), uint256(AuctionSaveTypes.GroupStatus.COMPLETED));
+    }
+
+    function test_Penalize_RevertWhen_AlreadyPenalized() public {
+        _joinAllMembers();
+
+        group.penalize(alice);
+
+        vm.expectRevert(AuctionSaveGroup.AlreadyPenalized.selector);
+        group.penalize(alice);
+    }
+
+    function test_Penalize_ForfeitsWithheld() public {
+        _joinAllMembers();
+
+        // Alice wins and gets withheld
+        _commitAndRevealBid(alice, 1000, keccak256("salt"));
+        group.resolveCycle();
+
+        (,,,,, uint256 withheldBefore) = group.members(alice);
+        assertTrue(withheldBefore > 0);
+
+        uint256 escrowBefore = group.penaltyEscrow();
+        group.penalize(alice);
+
+        // Should forfeit security + withheld
+        assertEq(group.penaltyEscrow(), escrowBefore + AuctionSaveTypes.SECURITY_DEPOSIT + withheldBefore);
+    }
+
+    function test_WithdrawSecurity_RevertWhen_GroupNotCompleted() public {
+        _joinAllMembers();
+
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.GroupNotCompleted.selector);
+        group.withdrawSecurity();
+    }
+
+    function test_WithdrawSecurity_RevertWhen_NothingToRefund() public {
+        _joinAllMembers();
+        _completeAllCycles();
+
+        // Withdraw once
+        vm.prank(alice);
+        group.withdrawSecurity();
+
+        // Try again
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.NothingToRefund.selector);
+        group.withdrawSecurity();
+    }
+
+    function test_WithdrawWithheld_RevertWhen_GroupNotCompleted() public {
+        _joinAllMembers();
+
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.GroupNotCompleted.selector);
+        group.withdrawWithheld();
+    }
+
+    function test_WithdrawWithheld_RevertWhen_NothingWithheld() public {
+        _joinAllMembers();
+        _completeAllCycles();
+
+        // Withdraw once
+        vm.prank(alice);
+        group.withdrawWithheld();
+
+        // Try again
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.NothingWithheld.selector);
+        group.withdrawWithheld();
+    }
+
+    function test_WithdrawDevFee_RevertWhen_NotDeveloper() public {
+        _joinAllMembers();
+        _completeAllCycles();
+
+        vm.prank(alice);
+        vm.expectRevert(AuctionSaveGroup.NotDeveloper.selector);
+        group.withdrawDevFee();
+    }
+
+    function test_WithdrawDevFee_RevertWhen_NoFeesToWithdraw() public {
+        _joinAllMembers();
+        _completeAllCycles();
+
+        // Withdraw once
+        vm.prank(developer);
+        group.withdrawDevFee();
+
+        // Try again
+        vm.prank(developer);
+        vm.expectRevert(AuctionSaveGroup.NoFeesToWithdraw.selector);
+        group.withdrawDevFee();
+    }
+
+    function test_GetMembers_ReturnsCorrectList() public {
+        _joinAllMembers();
+
+        address[] memory membersList = group.getMembers();
+        assertEq(membersList.length, 5);
+        assertEq(membersList[0], alice);
+        assertEq(membersList[1], bob);
+    }
+
+    function test_MemberList_ReturnsCorrectAddress() public {
+        _joinAllMembers();
+
+        assertEq(group.memberList(0), alice);
+        assertEq(group.memberList(4), eve);
+    }
+
+    function test_ResolveCycle_ZeroBidWinner() public {
+        _joinAllMembers();
+
+        // Alice commits and reveals 0 bid
+        _commitAndRevealBid(alice, 0, keccak256("salt"));
+
+        group.resolveCycle();
+
+        // Alice should still win (only bidder, even with 0)
+        (, bool hasWon,,,,) = group.members(alice);
+        assertTrue(hasWon);
+    }
+
+    function test_ResolveCycle_SkipsPenalizedInFallback() public {
+        _joinAllMembers();
+
+        // Penalize Alice (first member)
+        group.penalize(alice);
+
+        // No bids, fallback should skip Alice and pick Bob
+        group.resolveCycle();
+
+        (, bool aliceWon,,,,) = group.members(alice);
+        (, bool bobWon,,,,) = group.members(bob);
+        assertFalse(aliceWon);
+        assertTrue(bobWon);
+    }
+
+    /*//////////////////////////////////////////////////////////////
                             HELPERS
     //////////////////////////////////////////////////////////////*/
 
@@ -349,17 +660,30 @@ contract AuctionSaveGroupTest is Test {
         }
     }
 
-    function _computeCommitment(uint256 bps, bytes32 salt, address bidder, uint256 cycle) internal view returns (bytes32) {
+    function _computeCommitment(uint256 bps, bytes32 salt, address bidder, uint256 cycle)
+        internal
+        view
+        returns (bytes32)
+    {
         return keccak256(abi.encode(bps, salt, bidder, cycle, address(group), block.chainid));
     }
 
     function _commitAndRevealBid(address bidder, uint256 bps, bytes32 salt) internal {
         bytes32 commitment = _computeCommitment(bps, salt, bidder, group.currentCycle());
-        
+
         vm.prank(bidder);
         group.commitBid(commitment);
 
         vm.prank(bidder);
         group.revealBid(bps, salt);
+    }
+
+    function _completeAllCycles() internal {
+        for (uint256 i = 0; i < 5; i++) {
+            address member = members[i];
+            _commitAndRevealBid(member, 1000, keccak256(abi.encodePacked("salt", i)));
+            vm.warp(group.cycleStart());
+            group.resolveCycle();
+        }
     }
 }
