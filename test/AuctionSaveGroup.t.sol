@@ -39,7 +39,7 @@ contract AuctionSaveGroupTest is Test {
         members = [alice, bob, charlie, dave, eve];
 
         // Mint tokens and approve for all members
-        // Per boss's design: need COMMITMENT + SECURITY_DEPOSIT = 100 ether to join
+        // COMMITMENT + SECURITY_DEPOSIT = 100 ether to join
         // Plus extra for bid payments
         for (uint256 i = 0; i < members.length; i++) {
             token.mint(members[i], 10000 ether);
