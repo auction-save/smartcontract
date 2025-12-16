@@ -8,6 +8,7 @@ import "../src/MockUSDT.sol";
 
 /// @title DeployAuctionSave - Deployment script for AuctionSave protocol
 /// @notice Deploys AuctionSaveFactory and optionally creates a demo pool
+/// @dev After deployment, contract addresses will be logged to console and saved in broadcast files
 contract DeployAuctionSave is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
@@ -18,11 +19,14 @@ contract DeployAuctionSave is Script {
         // Deploy Factory
         AuctionSaveFactory factory = new AuctionSaveFactory(developer);
         console.log("AuctionSaveFactory deployed at:", address(factory));
+        console.log("  - Check broadcast folder for deployment details");
+        console.log("  - Address saved in: broadcast/DeployAuctionSave.s.sol/<chain-id>/run-latest.json");
 
         vm.stopBroadcast();
     }
 
-    /// @notice Deploy factory and create a demo group (per boss's design)
+    /// @notice Deploy factory and create a demo group
+    /// @dev Deployment results available in console output and broadcast files
     function runWithDemoGroup() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address developer = vm.envAddress("DEVELOPER_ADDRESS");
@@ -34,7 +38,7 @@ contract DeployAuctionSave is Script {
         AuctionSaveFactory factory = new AuctionSaveFactory(developer);
         console.log("AuctionSaveFactory deployed at:", address(factory));
 
-        // Create demo group (per boss's design)
+        // Create demo group
         address group = factory.createGroup(
             token,
             block.timestamp,
@@ -42,11 +46,15 @@ contract DeployAuctionSave is Script {
             false // demoMode
         );
         console.log("Demo AuctionSavePool deployed at:", group);
+        console.log(
+            "  - Full deployment details in broadcast/DeployAuctionSave.s.sol/<chain-id>/runWithDemoGroup-latest.json"
+        );
 
         vm.stopBroadcast();
     }
 
-    /// @notice Deploy for demo mode (per boss's design with speedUpCycle)
+    /// @notice Deploy for demo mode with speedUpCycle
+    /// @dev All contract addresses saved in broadcast directory with timestamp
     function runDemoMode() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address developer = vm.envAddress("DEVELOPER_ADDRESS");
@@ -58,7 +66,7 @@ contract DeployAuctionSave is Script {
         AuctionSaveFactory factory = new AuctionSaveFactory(developer);
         console.log("AuctionSaveFactory deployed at:", address(factory));
 
-        // Create demo group with demoMode=true (per boss's design)
+        // Create demo group with demoMode=true
         address group = factory.createGroup(
             token,
             block.timestamp,
@@ -66,11 +74,13 @@ contract DeployAuctionSave is Script {
             true // demoMode - enables speedUpCycle()
         );
         console.log("Demo AuctionSavePool (fast mode) deployed at:", group);
+        console.log("  - Deployment artifacts: broadcast/DeployAuctionSave.s.sol/<chain-id>/runDemoMode-latest.json");
 
         vm.stopBroadcast();
     }
 
     /// @notice Deploy everything: MockUSDT + Factory + Demo Group (RECOMMENDED for testnet)
+    /// @dev Complete deployment summary saved in broadcast files and console output
     function runFullDemo() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address developer = vm.envAddress("DEVELOPER_ADDRESS");
@@ -87,7 +97,7 @@ contract DeployAuctionSave is Script {
         AuctionSaveFactory factory = new AuctionSaveFactory(developer);
         console.log("AuctionSaveFactory deployed at:", address(factory));
 
-        // 3. Create demo group (per boss's design)
+        // 3. Create demo group
         address group = factory.createGroup(
             address(mockToken),
             block.timestamp,
@@ -102,6 +112,11 @@ contract DeployAuctionSave is Script {
         console.log("AuctionSaveFactory: ", address(factory));
         console.log("Demo Pool:          ", group);
         console.log("");
+        console.log("Where to find deployment details:");
+        console.log("1. Console output above shows all addresses");
+        console.log("2. Full artifacts in: broadcast/DeployAuctionSave.s.sol/<chain-id>/runFullDemo-latest.json");
+        console.log("3. Verification data in cache folder for each contract");
+        console.log("");
         console.log("Next steps:");
         console.log("1. Call mockToken.faucet() to get test tokens");
         console.log("2. Approve pool to spend your tokens (100 ether per join)");
@@ -111,6 +126,7 @@ contract DeployAuctionSave is Script {
     }
 
     /// @notice Deploy only MockUSDT token
+    /// @dev Token address logged and saved in broadcast artifacts
     function runDeployToken() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
 
@@ -118,6 +134,9 @@ contract DeployAuctionSave is Script {
 
         MockUSDT mockToken = new MockUSDT();
         console.log("MockUSDT deployed at:", address(mockToken));
+        console.log(
+            "  - Deployment details saved in: broadcast/DeployAuctionSave.s.sol/<chain-id>/runDeployToken-latest.json"
+        );
 
         vm.stopBroadcast();
     }
