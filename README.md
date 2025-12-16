@@ -220,9 +220,9 @@ forge script script/DeployAuctionSave.s.sol:DeployAuctionSave \
 
 ## DEPLOYMENT SUMMARY
 
-- [MockUSDT](https://sepolia-blockscout.lisk.com/address/0x3E55D7C74c633605ADEccCa68822853Bf3413512): 0x3E55D7C74c633605ADEccCa68822853Bf3413512
-- [AuctionSaveFactory](https://sepolia-blockscout.lisk.com/address/0x05b629F81DB435EdAf751d6262ecC1Db551473f3): 0x05b629F81DB435EdAf751d6262ecC1Db551473f3
-- [Demo Pool](https://sepolia-blockscout.lisk.com/address/0xe868Cafc0afBeCf1fdbA5bAcadF81A714fD0eF12): 0xe868Cafc0afBeCf1fdbA5bAcadF81A714fD0eF12
+- MockUSDT: [0x3E55D7C74c633605ADEccCa68822853Bf3413512](https://sepolia-blockscout.lisk.com/address/0x3E55D7C74c633605ADEccCa68822853Bf3413512)
+- AuctionSaveFactory: [0x05b629F81DB435EdAf751d6262ecC1Db551473f3](https://sepolia-blockscout.lisk.com/address/0x05b629F81DB435EdAf751d6262ecC1Db551473f3)
+- Demo Pool: [0xe868Cafc0afBeCf1fdbA5bAcadF81A714fD0eF12](https://sepolia-blockscout.lisk.com/address/0xe868Cafc0afBeCf1fdbA5bAcadF81A714fD0eF12)
 
 ## Frontend Integration (Quick)
 
