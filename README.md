@@ -6,11 +6,12 @@ Decentralized rotating savings auction protocol built on Lisk EVM with **pay-per
 
 AuctionSave is a traditional rotating savings concept (ROSCA) brought on-chain with:
 
-- **Fair randomness** via commit-reveal mechanism (no Chainlink VRF needed)
+- **Highest bidder wins** via commit-reveal auction (no Chainlink VRF needed)
 - **Pay-per-cycle** contributions (not prepaid)
 - **Automatic penalty system** for defaulters
 - **Transparent settlement** with dev fee support
 - **Security-first design** using OpenZeppelin's SafeERC20 and ReentrancyGuard
+- **Bid has economic meaning** - winner's bid is distributed to other contributors
 
 ## Architecture
 
@@ -18,13 +19,15 @@ AuctionSave is a traditional rotating savings concept (ROSCA) brought on-chain w
 src/
 ├── AuctionSaveFactory.sol      # Factory to deploy and track pools
 ├── AuctionSaveGroup.sol        # Core protocol logic per pool
+├── MockUSDT.sol                # Test token with faucet for demo
 └── libraries/
     └── AuctionSaveTypes.sol    # Shared structs, enums, constants
 
 test/
-├── AuctionSaveGroup.t.sol      # Comprehensive test suite (26 tests)
+├── AuctionSaveFactory.t.sol    # Factory tests (17 tests)
+├── AuctionSaveGroup.t.sol      # Group tests (66 tests)
 └── mocks/
-    └── MockERC20.sol      # Test token
+    └── MockERC20.sol           # Test token for unit tests
 
 script/
 └── DeployAuctionSave.s.sol     # Deployment scripts
@@ -48,11 +51,11 @@ Factory.createGroup(token, groupSize, contribution, securityDeposit, cycles, ...
 ```
 [COLLECTING] → payContribution()
      ↓
-[COMMITTING] → commitSeed(hash)
+[COMMITTING] → commitBid(commitment)
      ↓
-[REVEALING]  → revealSeed(seed, salt)
+[REVEALING]  → revealBid(bidAmount, salt)
      ↓
-[READY]      → settleCycle() → Winner gets pool!
+[READY]      → settleCycle() → Highest bidder wins!
      ↓
 Next cycle or COMPLETED
 ```
@@ -65,21 +68,21 @@ Next cycle or COMPLETED
 
 ## Key Features
 
-### Commit-Reveal Randomness
+### Commit-Reveal Auction
 
-No external oracle needed. Members contribute entropy:
+Highest bidder wins. Bid amount = discount given to other contributors:
 
 ```solidity
-// Commit phase
-commitment = keccak256(abi.encodePacked(seed, salt));
-commitSeed(commitment);
+// Commit phase - bid is sealed
+commitment = keccak256(abi.encode(bidAmount, salt, msg.sender, cycleNum, address(this), block.chainid));
+commitBid(commitment);
 
-// Reveal phase
-revealSeed(seed, salt);
+// Reveal phase - bid is verified
+revealBid(bidAmount, salt);
 
-// Winner selected from combined entropy
-finalEntropy = keccak256(abi.encodePacked(finalEntropy, seed));
-winnerIndex = uint256(finalEntropy) % eligibleCount;
+// Settlement - highest bidder wins
+// Winner payout = pool - devFee - winningBid
+// winningBid is distributed to other contributors as discount
 ```
 
 ### Penalty System
@@ -111,21 +114,58 @@ forge test -vv
 
 ## Deployment
 
+### Quick Start (Lisk Sepolia Testnet)
+
 ```bash
-# Set environment variables
-export PRIVATE_KEY=<your_private_key>
-export DEVELOPER_ADDRESS=<fee_recipient>
-export TOKEN_ADDRESS=<erc20_token>
+# 1. Setup environment
+cp .env.example .env
+# Edit .env with your PRIVATE_KEY and DEVELOPER_ADDRESS
 
-# Deploy factory only
-forge script script/DeployArisan.s.sol:DeployArisan --rpc-url <rpc_url> --broadcast
+# 2. Get test ETH from faucet
+# https://sepolia-faucet.lisk.com/
 
-# Deploy with demo group
-forge script script/DeployArisan.s.sol:DeployArisan --sig "runWithDemoGroup()" --rpc-url <rpc_url> --broadcast
-
-# Deploy demo mode (short time windows)
-forge script script/DeployArisan.s.sol:DeployArisan --sig "runDemoMode()" --rpc-url <rpc_url> --broadcast
+# 3. Deploy everything (MockUSDT + Factory + Demo Pool) - RECOMMENDED
+source .env
+forge script script/DeployAuctionSave.s.sol:DeployAuctionSave \
+  --sig "runFullDemo()" \
+  --rpc-url lisk_sepolia \
+  --broadcast \
+  -vvvv
 ```
+
+### Other Deployment Options
+
+```bash
+# Deploy factory only
+forge script script/DeployAuctionSave.s.sol:DeployAuctionSave \
+  --rpc-url lisk_sepolia --broadcast
+
+# Deploy with existing token
+export TOKEN_ADDRESS=0x...
+forge script script/DeployAuctionSave.s.sol:DeployAuctionSave \
+  --sig "runWithDemoGroup()" \
+  --rpc-url lisk_sepolia --broadcast
+
+# Deploy only MockUSDT token
+forge script script/DeployAuctionSave.s.sol:DeployAuctionSave \
+  --sig "runDeployToken()" \
+  --rpc-url lisk_sepolia --broadcast
+```
+
+### Network Configuration
+
+| Network      | Chain ID | RPC URL                          | Explorer                            |
+| ------------ | -------- | -------------------------------- | ----------------------------------- |
+| Lisk Sepolia | 4202     | https://rpc.sepolia-api.lisk.com | https://sepolia-blockscout.lisk.com |
+| Lisk Mainnet | 1135     | https://rpc.api.lisk.com         | https://blockscout.lisk.com         |
+
+### MockUSDT Faucet
+
+The MockUSDT contract includes a built-in faucet:
+
+- **Amount**: 10,000 mUSDT per claim
+- **Cooldown**: 1 hour between claims
+- **Usage**: Call `faucet()` on the MockUSDT contract
 
 ## Configuration
 

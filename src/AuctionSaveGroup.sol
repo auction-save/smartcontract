@@ -11,7 +11,6 @@ import "./libraries/AuctionSaveTypes.sol";
 /// @dev Implements secure fund handling, commit-reveal mechanism, and penalty system
 contract AuctionSaveGroup is ReentrancyGuard {
     using SafeERC20 for IERC20;
-    using AuctionSaveTypes for *;
 
     /*//////////////////////////////////////////////////////////////
                                 IMMUTABLES
@@ -55,7 +54,9 @@ contract AuctionSaveGroup is ReentrancyGuard {
     event BidCommitted(uint256 indexed cycle, address indexed member);
     event BidRevealed(uint256 indexed cycle, address indexed member, uint256 bidAmount);
     event MemberDefaulted(uint256 indexed cycle, address indexed member, uint256 penaltyAmount);
-    event AuctionSettled(uint256 indexed cycle, address indexed winner, uint256 winningBid, uint256 payout);
+    event AuctionSettled(
+        uint256 indexed cycle, address indexed winner, uint256 winningBid, uint256 payout, uint256 discountDistributed
+    );
     event GroupCompleted();
     event SecurityRefunded(address indexed member, uint256 amount);
     event PenaltyDistributed(address indexed member, uint256 amount);
@@ -91,6 +92,9 @@ contract AuctionSaveGroup is ReentrancyGuard {
     error NoFeesToWithdraw();
     error NothingToRefund();
     error BidTooHigh();
+    error NoCommitment();
+    error PayDeadlineNotPassed();
+    error InvalidCommitment();
 
     /*//////////////////////////////////////////////////////////////
                                 MODIFIERS
@@ -129,6 +133,16 @@ contract AuctionSaveGroup is ReentrancyGuard {
         uint256 _commitWindow,
         uint256 _revealWindow
     ) {
+        require(_token != address(0), "Invalid token");
+        require(_developer != address(0), "Invalid developer");
+        require(_groupSize >= 2, "Group too small");
+        require(_contributionAmount > 0, "Invalid contribution");
+        require(_totalCycles > 0, "Invalid cycles");
+        require(_cycleDuration > 0, "Invalid duration");
+        require(_payWindow > 0 && _commitWindow > 0 && _revealWindow > 0, "Invalid windows");
+        require(_payWindow + _commitWindow + _revealWindow <= _cycleDuration, "Windows exceed cycle duration");
+        require(_totalCycles <= _groupSize, "totalCycles cannot exceed groupSize");
+
         creator = _creator;
         token = IERC20(_token);
         developer = _developer;
@@ -222,7 +236,7 @@ contract AuctionSaveGroup is ReentrancyGuard {
         AuctionSaveTypes.Cycle storage cycle = cycles[currentCycle];
 
         if (cycle.status != AuctionSaveTypes.CycleStatus.COLLECTING) revert WrongCycleStatus();
-        if (block.timestamp <= cycle.payDeadline) revert PayWindowClosed();
+        if (block.timestamp <= cycle.payDeadline) revert PayDeadlineNotPassed();
 
         for (uint256 i = 0; i < memberList.length; i++) {
             address member = memberList[i];
@@ -248,6 +262,18 @@ contract AuctionSaveGroup is ReentrancyGuard {
         emit MemberDefaulted(currentCycle, member, penalty);
     }
 
+    /// @dev Internal function to process defaults (used by auto-advance in settleCycle)
+    function _processDefaultsInternal() internal {
+        for (uint256 i = 0; i < memberList.length; i++) {
+            address member = memberList[i];
+            AuctionSaveTypes.Member storage m = members[member];
+
+            if (m.joined && !m.defaulted && !contributions[currentCycle][member].paid) {
+                _penalizeMember(member);
+            }
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                             COMMIT-REVEAL AUCTION
     //////////////////////////////////////////////////////////////*/
@@ -266,6 +292,7 @@ contract AuctionSaveGroup is ReentrancyGuard {
         if (!contrib.paid) revert NotPaid();
         if (contrib.commitment != bytes32(0)) revert AlreadyCommitted();
         if (members[msg.sender].hasWon) revert AlreadyWon();
+        if (commitment == bytes32(0)) revert InvalidCommitment();
 
         contrib.commitment = commitment;
         emit BidCommitted(currentCycle, msg.sender);
@@ -291,14 +318,16 @@ contract AuctionSaveGroup is ReentrancyGuard {
 
         if (cycle.status != AuctionSaveTypes.CycleStatus.REVEALING) revert WrongCycleStatus();
         if (block.timestamp > cycle.revealDeadline) revert RevealWindowClosed();
+        if (!contrib.paid) revert NotPaid(); // Defense-in-depth
+        if (contrib.commitment == bytes32(0)) revert NoCommitment();
         if (contrib.revealed) revert AlreadyRevealed();
 
-        // Verify commitment
-        bytes32 expectedCommitment = keccak256(abi.encodePacked(bidAmount, salt));
+        // Verify commitment - MUST include bidder, cycle, contract, chainid to prevent commitment theft
+        bytes32 expectedCommitment = _computeCommitment(bidAmount, salt, msg.sender, currentCycle);
         if (contrib.commitment != expectedCommitment) revert InvalidReveal();
 
-        // Bid cannot exceed pool size (sanity check)
-        uint256 maxBid = contributionAmount * groupSize;
+        // Bid cannot exceed pool total contributions (sanity check)
+        uint256 maxBid = cycle.totalContributions;
         if (bidAmount > maxBid) revert BidTooHigh();
 
         contrib.revealedBid = bidAmount;
@@ -306,6 +335,16 @@ contract AuctionSaveGroup is ReentrancyGuard {
         cycle.revealCount++;
 
         emit BidRevealed(currentCycle, msg.sender, bidAmount);
+    }
+
+    /// @dev Compute commitment hash bound to bidder, cycle, contract, and chainid
+    /// @notice This prevents commitment theft where attacker copies commitment from mempool
+    function _computeCommitment(uint256 bidAmount, bytes32 salt, address bidder, uint256 cycleNum)
+        internal
+        view
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(bidAmount, salt, bidder, cycleNum, address(this), block.chainid));
     }
 
     /// @notice Advance to ready-to-settle after reveal deadline (anyone can call)
@@ -324,64 +363,212 @@ contract AuctionSaveGroup is ReentrancyGuard {
 
     /// @notice Settle the auction - HIGHEST BIDDER WINS
     /// @dev Demo: "Highest bidder wins the auction" -> "Winner receives the pool funds"
+    /// @dev Liveness guarantee: auto-advances phases if deadlines passed, fallback to deterministic selection
     function settleCycle() external onlyActiveGroup nonReentrant {
         AuctionSaveTypes.Cycle storage cycle = cycles[currentCycle];
 
-        if (cycle.status != AuctionSaveTypes.CycleStatus.READY_TO_SETTLE) revert NotReadyToSettle();
-
-        // Find HIGHEST BIDDER among eligible members
-        address winner = address(0);
-        uint256 highestBid = 0;
-
-        for (uint256 i = 0; i < memberList.length; i++) {
-            address member = memberList[i];
-            AuctionSaveTypes.Member storage m = members[member];
-            AuctionSaveTypes.Contribution storage contrib = contributions[currentCycle][member];
-
-            // Eligible: joined, not defaulted, not already won, paid, revealed
-            if (m.joined && !m.defaulted && !m.hasWon && contrib.paid && contrib.revealed) {
-                if (contrib.revealedBid > highestBid) {
-                    highestBid = contrib.revealedBid;
-                    winner = member;
-                }
-            }
+        // Auto-advance phases if deadlines have passed (liveness guarantee - single "poke" function)
+        if (cycle.status == AuctionSaveTypes.CycleStatus.COLLECTING && block.timestamp > cycle.payDeadline) {
+            _processDefaultsInternal();
+            cycle.status = AuctionSaveTypes.CycleStatus.COMMITTING;
+        }
+        if (cycle.status == AuctionSaveTypes.CycleStatus.COMMITTING && block.timestamp > cycle.commitDeadline) {
+            cycle.status = AuctionSaveTypes.CycleStatus.REVEALING;
+        }
+        if (cycle.status == AuctionSaveTypes.CycleStatus.REVEALING && block.timestamp > cycle.revealDeadline) {
+            cycle.status = AuctionSaveTypes.CycleStatus.READY_TO_SETTLE;
         }
 
-        require(winner != address(0), "No eligible winner");
+        if (cycle.status != AuctionSaveTypes.CycleStatus.READY_TO_SETTLE) revert NotReadyToSettle();
+
+        // Fix #2: Handle deadlock when no eligible winner exists
+        if (!_hasEligibleWinnerForCycle(currentCycle)) {
+            cycle.status = AuctionSaveTypes.CycleStatus.SETTLED;
+            groupStatus = AuctionSaveTypes.GroupStatus.COMPLETED;
+            emit GroupCompleted();
+            return;
+        }
+
+        // Select winner with liveness guarantee (no deadlock)
+        (address winner, uint256 winningBid) = _selectWinner(currentCycle);
 
         // Mark winner
         members[winner].hasWon = true;
         cycle.winner = winner;
-        cycle.winningBid = highestBid;
+        cycle.winningBid = winningBid;
 
-        // Calculate payout: pool minus dev fee
-        // The winning bid represents how much winner is willing to "sacrifice"
-        // In this implementation, winner gets full pool minus dev fee
-        // (bid is just for priority/auction mechanism)
+        // Calculate payout with bid as discount (bid has economic meaning)
+        // Winner gets: pool - devFee - winningBid
+        // winningBid is distributed to other contributors
         uint256 pool = cycle.totalContributions;
         uint256 devFee = (pool * AuctionSaveTypes.DEV_FEE_BPS) / AuctionSaveTypes.BPS;
-        uint256 payout = pool - devFee;
 
+        uint256 payoutToWinner = 0;
+        uint256 discountToDistribute = 0;
+
+        if (pool > devFee) {
+            uint256 net = pool - devFee;
+            // Clamp bid to net (safety)
+            uint256 bidClamped = winningBid > net ? net : winningBid;
+            payoutToWinner = net - bidClamped;
+            discountToDistribute = bidClamped;
+        }
+
+        // Update state BEFORE transfers (CEI pattern)
         devFeeBalance += devFee;
+        cycle.status = AuctionSaveTypes.CycleStatus.SETTLED;
 
         // Transfer to winner
-        token.safeTransfer(winner, payout);
+        if (payoutToWinner > 0) {
+            token.safeTransfer(winner, payoutToWinner);
+        }
 
-        cycle.status = AuctionSaveTypes.CycleStatus.SETTLED;
-        emit AuctionSettled(currentCycle, winner, highestBid, payout);
+        // Distribute bid discount to other contributors
+        uint256 distributed = _distributeDiscount(currentCycle, winner, discountToDistribute);
+
+        emit AuctionSettled(currentCycle, winner, winningBid, payoutToWinner, distributed);
 
         // Advance to next cycle or complete
-        if (currentCycle >= totalCycles) {
+        _advanceOrComplete(cycle.startTime);
+    }
+
+    /// @dev Select winner with liveness guarantee - never deadlocks
+    /// @dev Priority: 1) highest revealed bid, 2) deterministic fallback if no reveals
+    function _selectWinner(uint256 cycleNum) internal view returns (address winner, uint256 winningBid) {
+        // Count eligible winners and find last eligible (for fallback)
+        uint256 eligibleCount = 0;
+        address lastEligible;
+
+        for (uint256 i = 0; i < memberList.length; i++) {
+            address m = memberList[i];
+            if (_isEligibleWinner(cycleNum, m)) {
+                eligibleCount++;
+                lastEligible = m;
+            }
+        }
+
+        // If only one eligible winner remains -> deterministic (no deadlock)
+        if (eligibleCount == 1) {
+            return (lastEligible, 0);
+        }
+
+        // Find highest revealed bid among eligible winners
+        winner = address(0);
+        winningBid = 0;
+
+        for (uint256 i = 0; i < memberList.length; i++) {
+            address m = memberList[i];
+            if (!_isEligibleWinner(cycleNum, m)) continue;
+
+            AuctionSaveTypes.Contribution storage c = contributions[cycleNum][m];
+            if (!c.revealed) continue;
+
+            if (c.revealedBid > winningBid) {
+                winningBid = c.revealedBid;
+                winner = m;
+            }
+        }
+
+        // Fallback: no reveals -> pick first eligible (deterministic, no deadlock)
+        if (winner == address(0)) {
+            for (uint256 i = 0; i < memberList.length; i++) {
+                address m = memberList[i];
+                if (_isEligibleWinner(cycleNum, m)) {
+                    return (m, 0);
+                }
+            }
+            // Should never reach here if eligibleCount >= 1
+            revert("No eligible winner");
+        }
+
+        return (winner, winningBid);
+    }
+
+    /// @dev Check if member is eligible to win this cycle
+    /// @dev Must have committed (commitment != 0) to be eligible - prevents "free ride" without bidding
+    function _isEligibleWinner(uint256 cycleNum, address member) internal view returns (bool) {
+        AuctionSaveTypes.Member storage m = members[member];
+        AuctionSaveTypes.Contribution storage c = contributions[cycleNum][member];
+        return (m.joined && !m.defaulted && !m.hasWon && c.paid && c.commitment != bytes32(0));
+    }
+
+    /// @dev Check if any eligible winner exists for this specific cycle
+    function _hasEligibleWinnerForCycle(uint256 cycleNum) internal view returns (bool) {
+        for (uint256 i = 0; i < memberList.length; i++) {
+            if (_isEligibleWinner(cycleNum, memberList[i])) return true;
+        }
+        return false;
+    }
+
+    /// @dev Distribute bid discount to other contributors (bid has economic meaning)
+    function _distributeDiscount(uint256 cycleNum, address winner, uint256 discount)
+        internal
+        returns (uint256 distributed)
+    {
+        if (discount == 0) return 0;
+
+        // Recipients: paid & non-defaulted & not winner
+        uint256 count = 0;
+        for (uint256 i = 0; i < memberList.length; i++) {
+            address m = memberList[i];
+            if (m == winner) continue;
+            if (members[m].defaulted) continue;
+            if (!contributions[cycleNum][m].paid) continue;
+            count++;
+        }
+        if (count == 0) return 0;
+
+        uint256 share = discount / count;
+        uint256 remainder = discount - (share * count);
+
+        for (uint256 i = 0; i < memberList.length; i++) {
+            address m = memberList[i];
+            if (m == winner) continue;
+            if (members[m].defaulted) continue;
+            if (!contributions[cycleNum][m].paid) continue;
+
+            uint256 amt = share;
+            // Send dust to last recipient
+            if (remainder > 0) {
+                amt += remainder;
+                remainder = 0;
+            }
+
+            if (amt > 0) {
+                token.safeTransfer(m, amt);
+                distributed += amt;
+            }
+        }
+
+        return distributed;
+    }
+
+    /// @dev Advance to next cycle or complete the group
+    function _advanceOrComplete(uint256 cycleStartTime) internal {
+        // Complete if: reached totalCycles OR no eligible winners remaining
+        if (currentCycle >= totalCycles || !_hasEligibleWinnerRemaining()) {
             groupStatus = AuctionSaveTypes.GroupStatus.COMPLETED;
             emit GroupCompleted();
-        } else {
-            currentCycle++;
-            uint256 nextStart = cycle.startTime + cycleDuration;
-            if (nextStart < block.timestamp) {
-                nextStart = block.timestamp;
-            }
-            _initCycle(currentCycle, nextStart);
+            return;
         }
+
+        currentCycle++;
+        uint256 nextStart = cycleStartTime + cycleDuration;
+        if (nextStart < block.timestamp) {
+            nextStart = block.timestamp;
+        }
+        _initCycle(currentCycle, nextStart);
+    }
+
+    /// @dev Check if any eligible winner remains (for early completion)
+    function _hasEligibleWinnerRemaining() internal view returns (bool) {
+        for (uint256 i = 0; i < memberList.length; i++) {
+            address m = memberList[i];
+            if (members[m].joined && !members[m].defaulted && !members[m].hasWon) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -405,7 +592,8 @@ contract AuctionSaveGroup is ReentrancyGuard {
     /// @notice Distribute penalty escrow to honest members (anyone can call after completion)
     function distributePenaltyEscrow() external nonReentrant {
         if (groupStatus != AuctionSaveTypes.GroupStatus.COMPLETED) revert GroupNotCompleted();
-        if (penaltyEscrow == 0) return;
+        uint256 escrow = penaltyEscrow;
+        if (escrow == 0) return;
 
         uint256 honestCount = 0;
         for (uint256 i = 0; i < memberList.length; i++) {
@@ -414,22 +602,33 @@ contract AuctionSaveGroup is ReentrancyGuard {
             }
         }
 
-        if (honestCount == 0) return;
+        // If no honest members, send escrow to developer (prevents funds being stuck)
+        if (honestCount == 0) {
+            penaltyEscrow = 0;
+            token.safeTransfer(developer, escrow);
+            emit PenaltyDistributed(developer, escrow);
+            return;
+        }
 
-        uint256 sharePerMember = penaltyEscrow / honestCount;
-        uint256 distributed = 0;
+        uint256 share = escrow / honestCount;
+        uint256 remainder = escrow - (share * honestCount);
+
+        // Clear escrow first (CEI pattern)
+        penaltyEscrow = 0;
 
         for (uint256 i = 0; i < memberList.length; i++) {
             address member = memberList[i];
             if (!members[member].defaulted) {
-                token.safeTransfer(member, sharePerMember);
-                distributed += sharePerMember;
-                emit PenaltyDistributed(member, sharePerMember);
+                uint256 amt = share;
+                // Send dust to last recipient
+                if (remainder > 0) {
+                    amt += remainder;
+                    remainder = 0;
+                }
+                token.safeTransfer(member, amt);
+                emit PenaltyDistributed(member, amt);
             }
         }
-
-        // Handle dust (remainder goes to last honest member or stays)
-        penaltyEscrow -= distributed;
     }
 
     /*//////////////////////////////////////////////////////////////
