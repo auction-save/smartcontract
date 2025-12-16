@@ -222,6 +222,113 @@ forge test --gas-report
 - Dev fee (2 tests)
 - Accounting verification (2 tests)
 
+## Design Decisions & Simplifications
+
+This implementation is a **demo-optimized** version of the AuctionSave concept. Below are the key design decisions and how they differ from the original design document (`ref/design.md`).
+
+### What We Implemented (Core Features) ✅
+
+| Feature                   | Status | Description                               |
+| ------------------------- | ------ | ----------------------------------------- |
+| Two-Contract Architecture | ✅     | `AuctionSaveFactory` + `AuctionSaveGroup` |
+| Commit-Reveal Auction     | ✅     | Sealed bids prevent front-running         |
+| Pay-Per-Cycle             | ✅     | Members pay each cycle (not prepaid)      |
+| Penalty System            | ✅     | Defaulters lose security deposit          |
+| Dev Fee (1%)              | ✅     | Transparent fee accounting                |
+| Security Deposit          | ✅     | Refundable after group completes          |
+| Liveness Guarantee        | ✅     | `settleCycle()` auto-advances phases      |
+
+### Simplifications from Original Design 📝
+
+The original design document proposed a more complex economic model. We simplified it for demo clarity:
+
+#### 1. Single Deposit vs Dual Deposit
+
+**Original**: Join requires two deposits - `commitmentBalance` (50 LSK) + `fixedSecurityDeposit` (50 LSK)
+
+**Implemented**: Single `securityDeposit` only. Contributions are paid per-cycle.
+
+**Rationale**: Simpler UX, same security guarantee. The per-cycle payment model already ensures commitment.
+
+#### 2. Bid Amount vs Bid Percent
+
+**Original**: `submitBid(percent)` where `percent <= 30` (max 30% of contribution)
+
+**Implemented**: `commitBid(bidAmount)` where `bidAmount <= totalContributions`
+
+**Rationale**: Direct token amounts are more intuitive for demo. The economic effect is the same - higher bid = more sacrifice = wins auction.
+
+#### 3. No Withheld 20% Payout
+
+**Original**: Winner receives 80% immediately, 20% withheld until group completion
+
+**Implemented**: Winner receives full payout (minus bid discount) immediately
+
+**Rationale**: Simplifies accounting and improves demo flow. Withheld balance adds complexity without visible benefit in short demos.
+
+#### 4. No Commitment Offset
+
+**Original**: Winner gets `hasCommitmentOffset = true` to skip next cycle's contribution
+
+**Implemented**: No offset - winner still pays contribution next cycle
+
+**Rationale**: Edge case that rarely occurs in demo. Adds state complexity.
+
+#### 5. Deterministic Tie-Break vs Pseudo-Random
+
+**Original**: Tie → pseudo-random draw (block-based)
+
+**Implemented**: Tie → first eligible member in list wins (deterministic)
+
+**Rationale**: Deterministic is easier to test and reason about. In practice, ties are rare with real bids.
+
+#### 6. Demo Mode Time Acceleration
+
+**Original**: Special `advanceCycleForDemo()` function
+
+**Implemented**: Configurable `cycleDuration`, `payWindow`, `commitWindow`, `revealWindow`
+
+**Rationale**: Same effect achieved by setting short durations (e.g., 5 minutes per cycle). No special demo function needed.
+
+### Economic Model Summary
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    CYCLE SETTLEMENT                         │
+├─────────────────────────────────────────────────────────────┤
+│  Pool = sum of all contributions this cycle                 │
+│  DevFee = 1% of Pool                                        │
+│  WinnerPayout = Pool - DevFee - WinningBid                  │
+│  BidDiscount = WinningBid (distributed to other members)    │
+├─────────────────────────────────────────────────────────────┤
+│  Example (5 members, 100 USDT contribution each):           │
+│  - Pool = 500 USDT                                          │
+│  - DevFee = 5 USDT                                          │
+│  - Winner bids 50 USDT                                      │
+│  - Winner receives: 500 - 5 - 50 = 445 USDT                 │
+│  - Other 4 members receive: 50 / 4 = 12.5 USDT each         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Why These Simplifications?
+
+1. **Demo Clarity**: Judges can understand the flow in 5 minutes
+2. **Reduced Attack Surface**: Fewer state variables = fewer bugs
+3. **Gas Efficiency**: Simpler logic = lower gas costs
+4. **Test Coverage**: 83 tests covering all core flows
+5. **Same Core Value Proposition**: Commit-reveal auction + penalty system intact
+
+### Future Enhancements (Post-Hackathon)
+
+If deploying to production, consider adding:
+
+- [ ] Bid percent with `maxBidPercent` cap
+- [ ] Withheld 20% payout mechanism
+- [ ] Commitment offset for winners
+- [ ] Pseudo-random tie-breaking (using blockhash)
+- [ ] Multi-token support per group
+- [ ] Governance for parameter updates
+
 ## License
 
 MIT
