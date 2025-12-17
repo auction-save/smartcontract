@@ -195,11 +195,99 @@ contract AuctionSaveGroupTest is Test {
         assertEq(group.currentCycle(), 2);
     }
 
+    function test_PayoutMath_WinnerReceives80MinusFeeMinusNextCyclePayment() public {
+        _joinAllMembers();
+
+        // Everyone commits/reveals for cycle 1, make Charlie the highest bidder
+        _commitAndRevealBid(alice, 0, keccak256("saltA"));
+        _commitAndRevealBid(bob, 0, keccak256("saltB"));
+        _commitAndRevealBid(charlie, 1000, keccak256("saltC"));
+        _commitAndRevealBid(dave, 0, keccak256("saltD"));
+        _commitAndRevealBid(eve, 0, keccak256("saltE"));
+
+        uint256 balanceBefore = token.balanceOf(charlie);
+
+        vm.warp(group.cycleStart());
+        group.resolveCycle();
+
+        uint256 pool = AuctionSaveTypes.GROUP_SIZE * AuctionSaveTypes.COMMITMENT; // 250
+        uint256 eighty = (pool * 80) / 100; // 200
+        uint256 fee80 = (eighty * AuctionSaveTypes.DEV_FEE_BPS) / AuctionSaveTypes.BPS; // 2
+        uint256 nextCyclePayment = AuctionSaveTypes.COMMITMENT; // 50
+        uint256 expectedPayout80 = eighty - fee80 - nextCyclePayment; // 148
+
+        uint256 bidAmount = (AuctionSaveTypes.COMMITMENT * 1000) / AuctionSaveTypes.BPS; // 5
+        uint256 expectedDelta = expectedPayout80 - bidAmount; // 143
+
+        assertEq(token.balanceOf(charlie), balanceBefore + expectedDelta);
+        assertTrue(group.commitmentPaid(2, charlie));
+
+        (, bool hasWon,,,, uint256 withheld) = group.members(charlie);
+        assertTrue(hasWon);
+
+        uint256 twenty = pool - eighty; // 50
+        uint256 fee20 = (twenty * AuctionSaveTypes.DEV_FEE_BPS) / AuctionSaveTypes.BPS; // 0.5
+        assertEq(withheld, twenty - fee20);
+    }
+
+    function test_PayoutMath_LastWinnerNotDeductedNextCyclePayment() public {
+        _joinAllMembers();
+
+        // Cycle 1: Alice wins
+        _commitAndRevealBid(alice, 1000, keccak256("s1"));
+        vm.warp(group.cycleStart());
+        group.resolveCycle();
+
+        // Cycle 2: Bob wins
+        _payAllCommitmentsForCurrentCycle();
+        _commitAndRevealBid(bob, 1000, keccak256("s2"));
+        vm.warp(group.cycleStart());
+        group.resolveCycle();
+
+        // Cycle 3: Charlie wins
+        _payAllCommitmentsForCurrentCycle();
+        _commitAndRevealBid(charlie, 1000, keccak256("s3"));
+        vm.warp(group.cycleStart());
+        group.resolveCycle();
+
+        // Cycle 4: Dave wins
+        _payAllCommitmentsForCurrentCycle();
+        _commitAndRevealBid(dave, 1000, keccak256("s4"));
+        vm.warp(group.cycleStart());
+        group.resolveCycle();
+
+        // Cycle 5: Eve is the only eligible member left; no bids needed (fallback)
+        _payAllCommitmentsForCurrentCycle();
+
+        uint256 balanceBefore = token.balanceOf(eve);
+        vm.warp(group.cycleStart());
+        group.resolveCycle();
+
+        uint256 pool = AuctionSaveTypes.GROUP_SIZE * AuctionSaveTypes.COMMITMENT; // 250
+        uint256 eighty = (pool * 80) / 100; // 200
+        uint256 fee80 = (eighty * AuctionSaveTypes.DEV_FEE_BPS) / AuctionSaveTypes.BPS; // 2
+        uint256 expectedPayout80 = eighty - fee80; // 198 (no next-cycle deduction on last cycle)
+
+        assertEq(token.balanceOf(eve), balanceBefore + expectedPayout80);
+
+        (,,, bool hasOffset,, uint256 withheld) = group.members(eve);
+        assertFalse(hasOffset);
+
+        uint256 twenty = pool - eighty; // 50
+        uint256 fee20 = (twenty * AuctionSaveTypes.DEV_FEE_BPS) / AuctionSaveTypes.BPS; // 0.5
+        assertEq(withheld, twenty - fee20);
+
+        assertEq(uint256(group.groupStatus()), uint256(AuctionSaveTypes.GroupStatus.COMPLETED));
+    }
+
     function test_ResolveCycle_CompletesAfterAllCycles() public {
         _joinAllMembers();
 
         // Run through all 5 cycles
         for (uint256 i = 0; i < 5; i++) {
+            if (group.currentCycle() > 1) {
+                _payAllCommitmentsForCurrentCycle();
+            }
             address member = members[i];
             _commitAndRevealBid(member, 1000, keccak256(abi.encodePacked("salt", i)));
 
@@ -281,6 +369,9 @@ contract AuctionSaveGroupTest is Test {
 
         // Complete all cycles
         for (uint256 i = 0; i < 5; i++) {
+            if (group.currentCycle() > 1) {
+                _payAllCommitmentsForCurrentCycle();
+            }
             address member = members[i];
             _commitAndRevealBid(member, 1000, keccak256(abi.encodePacked("salt", i)));
             vm.warp(group.cycleStart());
@@ -300,6 +391,9 @@ contract AuctionSaveGroupTest is Test {
 
         // Complete all cycles
         for (uint256 i = 0; i < 5; i++) {
+            if (group.currentCycle() > 1) {
+                _payAllCommitmentsForCurrentCycle();
+            }
             address member = members[i];
             _commitAndRevealBid(member, 1000, keccak256(abi.encodePacked("salt", i)));
             vm.warp(group.cycleStart());
@@ -322,6 +416,9 @@ contract AuctionSaveGroupTest is Test {
 
         // Complete all cycles
         for (uint256 i = 0; i < 5; i++) {
+            if (group.currentCycle() > 1) {
+                _payAllCommitmentsForCurrentCycle();
+            }
             address member = members[i];
             _commitAndRevealBid(member, 1000, keccak256(abi.encodePacked("salt", i)));
             vm.warp(group.cycleStart());
@@ -678,8 +775,23 @@ contract AuctionSaveGroupTest is Test {
         group.revealBid(bps, salt);
     }
 
+    function _payAllCommitmentsForCurrentCycle() internal {
+        uint256 cycle = group.currentCycle();
+        for (uint256 i = 0; i < members.length; i++) {
+            address m = members[i];
+            (bool joined,, bool defaulted,,,) = group.members(m);
+            if (!joined || defaulted) continue;
+            if (group.commitmentPaid(cycle, m)) continue;
+            vm.prank(m);
+            group.payCommitment();
+        }
+    }
+
     function _completeAllCycles() internal {
         for (uint256 i = 0; i < 5; i++) {
+            if (group.currentCycle() > 1) {
+                _payAllCommitmentsForCurrentCycle();
+            }
             address member = members[i];
             _commitAndRevealBid(member, 1000, keccak256(abi.encodePacked("salt", i)));
             vm.warp(group.cycleStart());

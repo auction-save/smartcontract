@@ -47,6 +47,8 @@ contract AuctionSaveGroup is ReentrancyGuard {
     mapping(uint256 => mapping(address => uint256)) public revealedBids; // in BPS
     mapping(uint256 => mapping(address => bool)) public hasRevealedBid;
 
+    mapping(uint256 => mapping(address => bool)) public commitmentPaid;
+
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -87,6 +89,8 @@ contract AuctionSaveGroup is ReentrancyGuard {
     error NothingWithheld();
     error AlreadyPenalized();
     error InvalidCommitment();
+    error CommitmentNotPaid(address member, uint256 cycle);
+    error CommitmentAlreadyPaid(address member, uint256 cycle);
 
     /*//////////////////////////////////////////////////////////////
                                 MODIFIERS
@@ -153,12 +157,23 @@ contract AuctionSaveGroup is ReentrancyGuard {
         memberList.push(msg.sender);
         emit Joined(msg.sender);
 
+        commitmentPaid[1][msg.sender] = true;
+
         // Activate when full
         if (memberList.length == AuctionSaveTypes.GROUP_SIZE) {
             groupStatus = AuctionSaveTypes.GroupStatus.ACTIVE;
             currentCycle = 1;
             cycleStart = startTime;
         }
+    }
+
+    function payCommitment() external onlyMember activeGroup nonReentrant {
+        if (members[msg.sender].defaulted) revert MemberPenalized();
+        if (groupStatus != AuctionSaveTypes.GroupStatus.ACTIVE) revert GroupNotActive();
+        if (commitmentPaid[currentCycle][msg.sender]) revert CommitmentAlreadyPaid(msg.sender, currentCycle);
+
+        token.safeTransferFrom(msg.sender, address(this), AuctionSaveTypes.COMMITMENT);
+        commitmentPaid[currentCycle][msg.sender] = true;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -206,6 +221,12 @@ contract AuctionSaveGroup is ReentrancyGuard {
     /// @notice Resolve the current cycle and select winner
     function resolveCycle() external activeGroup nonReentrant {
         if (block.timestamp < cycleStart) revert CycleNotStarted();
+
+        for (uint256 i = 0; i < memberList.length; i++) {
+            address u = memberList[i];
+            if (members[u].defaulted) continue;
+            if (!commitmentPaid[currentCycle][u]) revert CommitmentNotPaid(u, currentCycle);
+        }
 
         // Find highest bidder
         address winner;
@@ -282,9 +303,8 @@ contract AuctionSaveGroup is ReentrancyGuard {
         }
 
         /* ---------- POOL PAYMENT (80/20 split) ---------- */
-        // Note: Pool per cycle = total COMMITMENT collected at join / GROUP_SIZE cycles
-        // This ensures contract has enough funds for all cycles
-        uint256 totalPool = AuctionSaveTypes.COMMITMENT; // Per-cycle pool
+        // Note: Pool per cycle = GROUP_SIZE * COMMITMENT, funded by per-cycle commitment payments
+        uint256 totalPool = AuctionSaveTypes.GROUP_SIZE * AuctionSaveTypes.COMMITMENT;
         uint256 eighty = (totalPool * 80) / 100;
         uint256 twenty = totalPool - eighty;
 
@@ -293,13 +313,20 @@ contract AuctionSaveGroup is ReentrancyGuard {
 
         devFeeBalance += (fee80 + fee20);
 
-        // Transfer 80% to winner
-        token.safeTransfer(winner, eighty - fee80);
+        uint256 payout80 = eighty - fee80;
+        if (currentCycle < AuctionSaveTypes.GROUP_SIZE) {
+            uint256 nextCyclePayment = AuctionSaveTypes.COMMITMENT;
+            token.safeTransfer(winner, payout80 - nextCyclePayment);
+            commitmentPaid[currentCycle + 1][winner] = true;
+            m.hasOffset = true;
+        } else {
+            token.safeTransfer(winner, payout80);
+            m.hasOffset = false;
+        }
 
         // Store 20% as withheld
         m.withheld += (twenty - fee20);
         m.hasWon = true;
-        m.hasOffset = true;
 
         emit CycleResolved(currentCycle, winner);
 

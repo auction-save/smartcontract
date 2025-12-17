@@ -61,7 +61,7 @@ script/
 │  Eve    → deposit 100 USDT → Contract                               │
 │                                                                     │
 │  Total in Contract: 500 USDT                                        │
-│  - Pool (5 × 50 USDT)      = 250 USDT (for 5 cycles)               │
+│  - Cycle 1 pool funding (5 × 50 USDT) = 250 USDT                   │
 │  - Security (5 × 50 USDT)  = 250 USDT (returned at end)            │
 │                                                                     │
 │  Status: ACTIVE, Cycle 1 starts                                     │
@@ -71,7 +71,10 @@ script/
 │                     PHASE 2: CYCLE 1 - BIDDING                       │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  Pool per cycle = 50 USDT (COMMITMENT)                              │
+│  Pool per cycle = 250 USDT (GROUP_SIZE × COMMITMENT)                │
+│  Funding rule: Every cycle, each member must pay 50 USDT via         │
+│  payCommitment() before resolveCycle().                              │
+│  (Cycle 1 commitment is included in join deposit.)                   │
 │                                                                     │
 │  COMMIT PHASE:                                                      │
 │  Alice   → commitBid(hash(1000 BPS, salt))  // 10%                  │
@@ -105,22 +108,26 @@ script/
 │     Alice, Bob, Dave, Eve each receive 3.7125 USDT                  │
 │                                                                     │
 │  2. POOL PAYMENT (80/20 split):                                     │
-│     Pool = 50 USDT                                                  │
-│     80% = 40 USDT                                                   │
-│     20% = 10 USDT                                                   │
+│     Pool = 250 USDT                                                 │
+│     80% = 200 USDT                                                  │
+│     20% = 50 USDT                                                   │
 │                                                                     │
-│     Dev fee 80% = 40 × 1% = 0.4 USDT                                │
-│     Dev fee 20% = 10 × 1% = 0.1 USDT                                │
+│     Dev fee 80% = 200 × 1% = 2.0 USDT                               │
+│     Dev fee 20% = 50 × 1% = 0.5 USDT                                │
 │                                                                     │
-│     Charlie receives immediately: 40 - 0.4 = 39.6 USDT              │
-│     Charlie withheld: 10 - 0.1 = 9.9 USDT (claimed after completion)│
+│     Next cycle payment (commitment offset): 50 USDT                 │
+│     - Deducted from winner's 80% payout to prepay next cycle        │
+│     - Not applied for last cycle winner                             │
+│                                                                     │
+│     Charlie receives immediately: 200 - 2.0 - 50 = 148.0 USDT        │
+│     Charlie withheld: 50 - 0.5 = 49.5 USDT (claimed after completion)│
 │                                                                     │
 │  CYCLE 1 RESULT:                                                    │
-│  - Charlie: +39.6 USDT (immediate) + 9.9 USDT (withheld)            │
+│  - Charlie: +148.0 USDT (immediate) + 49.5 USDT (withheld)          │
 │  - Charlie: -15 USDT (bid payment)                                  │
-│  - Charlie NET: +34.5 USDT immediate, +9.9 USDT later               │
+│  - Charlie NET: +133.0 USDT immediate, +49.5 USDT later             │
 │  - Alice, Bob, Dave, Eve: +3.7125 USDT each                         │
-│  - Dev: +0.65 USDT                                                  │
+│  - Dev: +2.65 USDT (pool fees 2.5 + bid fee 0.15)                   │
 │                                                                     │
 │  Charlie.hasWon = true (cannot win again)                           │
 │  Cycle 2 starts                                                     │
@@ -136,9 +143,13 @@ script/
 │  Cycle 5: 1 member remaining automatically wins                     │
 │                                                                     │
 │  Each cycle:                                                        │
-│  - Pool = 50 USDT                                                   │
-│  - Winner receives 80% = 39.6 USDT (after fees)                    │
-│  - Winner withheld 20% = 9.9 USDT                                   │
+│  - Each member pays commitment: 50 USDT via payCommitment()         │
+│  - Pool = 250 USDT                                                  │
+│  - Winner receives 80% = 200 USDT                                   │
+│    - Dev fee: 2.0 USDT                                              │
+│    - Next cycle payment: 50 USDT (except last winner)               │
+│    - Immediate payout: 148.0 USDT (cycles 1-4), 198.0 USDT (cycle 5)│
+│  - Winner withheld 20%: 49.5 USDT                                   │
 │  - Winner pays bid amount (0-30% of 50 USDT)                        │
 │  - Non-winners receive share from bid amount                        │
 │                                                                     │
@@ -154,27 +165,33 @@ script/
 │     Alice, Bob, Charlie, Dave, Eve → each 50 USDT                   │
 │                                                                     │
 │  2. withdrawWithheld() - Winners claim 20% withheld                 │
-│     Each winner → 9.9 USDT                                          │
+│     Each winner → 49.5 USDT                                         │
 │                                                                     │
 │  3. withdrawDevFee() - Developer claims fees                        │
-│     Developer → total ~3.25 USDT (5 cycles × 0.65 USDT)             │
+│     Developer → total = sum(pool fees + bid fees) across cycles      │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Economic Summary per Member
 
-Assumption: All members bid 10% (1000 BPS) and win in different cycles
+Assumption: All members bid 10% (1000 BPS) and win in different cycles.
 
-| Member  | Deposit | Bid Payment | Pool 80% | Withheld 20% | Bid Share | Security | NET   |
-| ------- | ------- | ----------- | -------- | ------------ | --------- | -------- | ----- |
-| Alice   | -100    | -5          | +39.6    | +9.9         | +14.85    | +50      | +9.35 |
-| Bob     | -100    | -5          | +39.6    | +9.9         | +14.85    | +50      | +9.35 |
-| Charlie | -100    | -5          | +39.6    | +9.9         | +14.85    | +50      | +9.35 |
-| Dave    | -100    | -5          | +39.6    | +9.9         | +14.85    | +50      | +9.35 |
-| Eve     | -100    | -5          | +39.6    | +9.9         | +14.85    | +50      | +9.35 |
+- **Deposit at join**
+  - 100 USDT per member (50 commitment for cycle 1 + 50 security)
+- **Per-cycle funding (cycles 2-5)**
+  - Each cycle requires each member to pay 50 USDT via payCommitment()
+  - After a member wins (cycles 1-4), their next-cycle commitment is prepaid by deducting 50 USDT from their 80% payout
+  - Last winner (cycle 5) has no next cycle, so no deduction
+- **Winner payout per cycle**
+  - Pool per cycle = 250 USDT
+  - Winner 80% gross = 200 USDT
+  - Dev fee on 80% = 2 USDT
+  - Next-cycle payment deduction = 50 USDT (cycles 1-4 only)
+  - Immediate payout = 148 USDT (cycles 1-4) or 198 USDT (cycle 5)
+  - Withheld 20% after fee = 49.5 USDT (claimable after completion)
 
-**Note**: Bid share is calculated from total bid payments from all winners distributed to non-winners.
+**Note**: Bid share is calculated from bid payments distributed to non-winners.
 
 ---
 
@@ -220,9 +237,9 @@ forge script script/DeployAuctionSave.s.sol:DeployAuctionSave \
 
 ## DEPLOYMENT SUMMARY
 
-- MockUSDT: [0x3E55D7C74c633605ADEccCa68822853Bf3413512](https://sepolia-blockscout.lisk.com/address/0x3E55D7C74c633605ADEccCa68822853Bf3413512)
-- AuctionSaveFactory: [0x05b629F81DB435EdAf751d6262ecC1Db551473f3](https://sepolia-blockscout.lisk.com/address/0x05b629F81DB435EdAf751d6262ecC1Db551473f3)
-- Demo Pool: [0xe868Cafc0afBeCf1fdbA5bAcadF81A714fD0eF12](https://sepolia-blockscout.lisk.com/address/0xe868Cafc0afBeCf1fdbA5bAcadF81A714fD0eF12)
+- MockUSDT: [0x4540Bfb67da3555ACcC9c0C5DeA6eF74b25F7ffF](https://sepolia-blockscout.lisk.com/address/0x4540Bfb67da3555ACcC9c0C5DeA6eF74b25F7ffF)
+- AuctionSaveFactory: [0x47B737a8d63602bF67bA4aA2E2511472d71bc54B](https://sepolia-blockscout.lisk.com/address/0x47B737a8d63602bF67bA4aA2E2511472d71bc54B)
+- Demo Pool: [0x175886C47618625e47b579697c131B27D1f44a38](https://sepolia-blockscout.lisk.com/address/0x175886C47618625e47b579697c131B27D1f44a38)
 
 ## Frontend Integration (Quick)
 
